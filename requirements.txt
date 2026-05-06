@@ -1,0 +1,16 @@
+requests
+python-dotenv
+python-telegram-bot
+beautifulsoup4
+pytz
+numpy
+apscheduler
+nba-api
+sportsreference
+scikit-learn
+pandas
+xgboost
+hockey-scraper
+flask
+Pillow
+pytesseract
