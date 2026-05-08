@@ -102,6 +102,15 @@ MATCHES_CACHE_NHL = []
 MATCHES_CACHE_NFL = []
 MATCHES_CACHE_TIME = None
 
+# Cache Odds API — une requête toutes les 4h par sport, seulement avant les matchs
+_ODDS_API_CACHE = {}  # sport_key → {"data": [...], "fetched_at": datetime}
+_ODDS_API_CACHE_TTL = 14400  # 4 heures
+_ODDS_API_SPORT_KEYS = {
+    "nba": "basketball_nba",
+    "nhl": "icehockey_nhl",
+    "nfl": "americanfootball_nfl",
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # NHL TEAMS STATS (2025-2026 Season) - Advanced Metrics
 # ═══════════════════════════════════════════════════════════════════════════
@@ -971,6 +980,155 @@ def get_best_odds_nba(away_team, home_team):
         "away_book": best_away["book"],
         "home_book": best_home["book"],
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ODDS API EN TEMPS RÉEL — économie maximale de requêtes
+# Appelé UNIQUEMENT depuis auto_send_pronostics (avant-match)
+# Cache 4h par sport = max ~3 requêtes/jour si matchs existent
+# ═══════════════════════════════════════════════════════════════════════════
+
+def fetch_odds_api(sport_key: str) -> list:
+    """
+    Appelle The Odds API une seule fois par tranche de 4h par sport.
+    Retourne la liste brute d'événements avec cotes (h2h + spreads + totals).
+    Retourne [] si clé absente, quota dépassé ou erreur réseau.
+    """
+    global _ODDS_API_CACHE
+    if not ODDS_API_KEY:
+        return []
+
+    now = datetime.datetime.now()
+    cached = _ODDS_API_CACHE.get(sport_key)
+    if cached:
+        elapsed = (now - cached["fetched_at"]).total_seconds()
+        if elapsed < _ODDS_API_CACHE_TTL:
+            logger.debug(f"📦 Odds API cache {sport_key} ({int(elapsed/60)} min ago)")
+            return cached["data"]
+
+    api_sport = _ODDS_API_SPORT_KEYS.get(sport_key)
+    if not api_sport:
+        return []
+
+    try:
+        url = (
+            f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/"
+            f"?apiKey={ODDS_API_KEY}"
+            f"&regions=us"
+            f"&markets=h2h,spreads,totals"
+            f"&oddsFormat=decimal"
+            f"&dateFormat=iso"
+        )
+        resp = requests.get(url, timeout=10)
+        remaining = resp.headers.get("x-requests-remaining", "?")
+        used = resp.headers.get("x-requests-used", "?")
+
+        if resp.status_code == 200:
+            data = resp.json()
+            _ODDS_API_CACHE[sport_key] = {"data": data, "fetched_at": now}
+            logger.info(f"✅ Odds API {sport_key}: {len(data)} matchs | restantes={remaining} utilisées={used}")
+            return data
+        elif resp.status_code == 401:
+            logger.error("❌ Odds API: clé invalide (401)")
+        elif resp.status_code == 429:
+            logger.warning("⚠️ Odds API: quota mensuel dépassé (429)")
+        else:
+            logger.warning(f"⚠️ Odds API {sport_key}: HTTP {resp.status_code}")
+    except Exception as e:
+        logger.error(f"❌ Odds API erreur {sport_key}: {e}")
+
+    return []
+
+
+def get_live_odds_for_match(away_team: str, home_team: str, api_events: list) -> dict:
+    """
+    Cherche les cotes en temps réel pour un match dans la réponse Odds API.
+    Retourne dict avec ml_away, ml_home, spread_pick, spread_odds, ou_pick, ou_odds
+    ou dict vide si introuvable.
+    """
+    if not api_events:
+        return {}
+
+    away_parts = [p for p in away_team.lower().split() if len(p) > 3]
+    home_parts = [p for p in home_team.lower().split() if len(p) > 3]
+
+    best_event = None
+    best_score = 0
+
+    for event in api_events:
+        ev_away = event.get("away_team", "").lower()
+        ev_home = event.get("home_team", "").lower()
+        score = 0
+        for p in away_parts:
+            if p in ev_away: score += 2
+            if p in ev_home: score += 1  # inversé possible
+        for p in home_parts:
+            if p in ev_home: score += 2
+            if p in ev_away: score += 1
+        if score > best_score:
+            best_score = score
+            best_event = event
+
+    if not best_event or best_score < 2:
+        return {}
+
+    ml_away, ml_home = None, None
+    spread_pick, spread_odds = "", "1.91"
+    ou_pick, ou_odds = "", "1.91"
+
+    # Priorité bookmakers US
+    priority = ["draftkings", "fanduel", "betmgm", "bet365", "bovada", "pointsbet"]
+    bookmakers = sorted(
+        best_event.get("bookmakers", []),
+        key=lambda b: priority.index(b["key"]) if b["key"] in priority else 99
+    )
+
+    for bk in bookmakers:
+        for market in bk.get("markets", []):
+            mkey = market["key"]
+            outcomes = market.get("outcomes", [])
+
+            if mkey == "h2h" and ml_away is None:
+                for o in outcomes:
+                    name = o["name"].lower()
+                    if any(p in name for p in away_parts):
+                        ml_away = o["price"]
+                    elif any(p in name for p in home_parts):
+                        ml_home = o["price"]
+
+            elif mkey == "spreads" and not spread_pick:
+                for o in outcomes:
+                    name = o["name"].lower()
+                    pt = o.get("point", 0)
+                    if any(p in name for p in away_parts):
+                        sign = "+" if pt > 0 else ""
+                        spread_pick = f"{away_team.upper()} {sign}{pt}"
+                        spread_odds = f"{o['price']:.2f}"
+                        break
+
+            elif mkey == "totals" and not ou_pick:
+                for o in outcomes:
+                    if o["name"] == "Over":
+                        pt = o.get("point", 0)
+                        ou_pick = f"OVER {pt}"
+                        ou_odds = f"{o['price']:.2f}"
+                        break
+
+        if ml_away and ml_home and spread_pick and ou_pick:
+            break
+
+    if ml_away is None or ml_home is None:
+        return {}
+
+    return {
+        "ml_away": ml_away,
+        "ml_home": ml_home,
+        "spread_pick": spread_pick,
+        "spread_odds": spread_odds,
+        "ou_pick": ou_pick,
+        "ou_odds": ou_odds,
+    }
+
 
 def generate_prediction_nhl(away_team, home_team):
     """Génère une prédiction pour un match NHL"""
@@ -2873,6 +3031,13 @@ async def auto_send_pronostics(context):
     if not upcoming_matches:
         return
 
+    # ── Récupérer les cotes en temps réel UNE FOIS par sport (Odds API) ──
+    # Une seule requête par sport toutes les 4h — économie maximale de quota
+    sports_in_play = {sk for sk, *_ in upcoming_matches}
+    live_odds_by_sport = {}
+    for sk in sports_in_play:
+        live_odds_by_sport[sk] = fetch_odds_api(sk)
+
     # Générer les picks pour chaque match trouvé
     all_picks = []
     for sport_key, emoji, away, home, match_time in upcoming_matches:
@@ -2884,29 +3049,55 @@ async def auto_send_pronostics(context):
             else:
                 pred = generate_prediction_nfl(away, home)
 
-            # Inclure même les picks PASS dans VIP (l'utilisateur décide)
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
+
+                # Remplacer ML + Spread + O/U par les cotes réelles si disponibles
+                live = get_live_odds_for_match(away, home, live_odds_by_sport.get(sport_key, []))
+                if live:
+                    ml_pick_away = f"{away.upper()} ML"
+                    ml_pick_home = f"{home.upper()} ML"
+                    if live["ml_away"] > live["ml_home"]:
+                        real_ml_pick = ml_pick_away
+                        real_ml_odds = f"{live['ml_away']:.2f}"
+                    else:
+                        real_ml_pick = ml_pick_home
+                        real_ml_odds = f"{live['ml_home']:.2f}"
+                    real_spread_pick = live["spread_pick"]
+                    real_spread_odds = live["spread_odds"]
+                    real_ou_pick = live["ou_pick"]
+                    real_ou_odds = live["ou_odds"]
+                    source_tag = "🟢"  # cotes réelles
+                else:
+                    real_ml_pick = pred.get('ml_pick', pred.get('pick', ''))
+                    real_ml_odds = pred.get('ml_odds', pred.get('odds', ''))
+                    real_spread_pick = pred.get('spread_pick', '')
+                    real_spread_odds = pred.get('spread_odds', '')
+                    real_ou_pick = pred.get('ou_pick', '')
+                    real_ou_odds = pred.get('ou_odds', '')
+                    source_tag = "📊"  # cotes calculées
+
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}",
                     "heure": qc_time.strftime('%H:%M'),
+                    "source": source_tag,
                     # ML
-                    "ml_pick": pred.get('ml_pick', pred.get('pick', '')),
-                    "ml_odds": pred.get('ml_odds', pred.get('odds', '')),
+                    "ml_pick": real_ml_pick,
+                    "ml_odds": real_ml_odds,
                     "ml_confidence": pred.get('ml_confidence', pred.get('confidence', 0)),
                     "ml_ev_pct": pred.get('ml_ev_pct', pred.get('ev_pct', '')),
                     "ml_status": pred.get('status', ''),
                     # Spread
-                    "spread_pick": pred.get('spread_pick', ''),
-                    "spread_odds": pred.get('spread_odds', ''),
+                    "spread_pick": real_spread_pick,
+                    "spread_odds": real_spread_odds,
                     "spread_confidence": pred.get('spread_confidence', 0),
                     # O/U
-                    "ou_pick": pred.get('ou_pick', ''),
-                    "ou_odds": pred.get('ou_odds', ''),
+                    "ou_pick": real_ou_pick,
+                    "ou_odds": real_ou_odds,
                     "ou_confidence": pred.get('ou_confidence', 0),
-                    # pick FREE = ML pick
-                    "pick": pred.get('pick', ''),
-                    "odds": pred.get('odds', ''),
+                    # pick FREE = ML
+                    "pick": real_ml_pick,
+                    "odds": real_ml_odds,
                     "confidence": pred.get('confidence', 0),
                     "ev": pred.get('ev_pct', ''),
                 })
@@ -2942,7 +3133,8 @@ async def auto_send_pronostics(context):
         msg_vip += "═" * 44 + "\n\n"
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else f"{i}️⃣")
-            msg_vip += f"{emoji_rank} {p['label']}  ⏰ {p['heure']}\n"
+            src = p.get('source', '📊')
+            msg_vip += f"{emoji_rank} {p['label']}  ⏰ {p['heure']}  {src}\n"
             msg_vip += f"   📊 ML:     {p['ml_pick']} @ {p['ml_odds']}  ({p['ml_confidence']}%) {p['ml_status']}\n"
             if p['spread_pick']:
                 msg_vip += f"   📏 SPREAD: {p['spread_pick']} @ {p['spread_odds']}  ({p['spread_confidence']}%)\n"
@@ -2950,6 +3142,9 @@ async def auto_send_pronostics(context):
                 msg_vip += f"   🔢 O/U:    {p['ou_pick']} @ {p['ou_odds']}  ({p['ou_confidence']}%)\n"
             msg_vip += f"   💰 EV: {p['ml_ev_pct']}\n\n"
         msg_vip += "═" * 44 + "\n"
+        live_count = sum(1 for p in all_picks if p.get('source') == '🟢')
+        if live_count:
+            msg_vip += f"🟢 {live_count} match(s) avec cotes live | 📊 calculées\n"
         msg_vip += "🧠 Modèle ML ULTRON v6.0 — Bonne chance!"
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
