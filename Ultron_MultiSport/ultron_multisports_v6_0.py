@@ -2635,119 +2635,215 @@ def _build_picks_for_sport(sport: str):
 
 
 async def auto_daily_motivation(context):
-    """
-    AUTOMATION 3: Message de motivation quotidien à 9h00 heure Québec.
-    Envoyé dans le canal FREE et VIP.
-    """
+    """9h00 Quebec: Message de motivation + résumé des matchs du jour"""
     if not TELEGRAM_CHAT_ID:
         return
 
-    import random
     quebec_time = get_quebec_time()
     day_index = quebec_time.timetuple().tm_yday % len(MOTIVATION_MESSAGES)
     quote = MOTIVATION_MESSAGES[day_index]
 
-    msg = f"🌅 GOOD MORNING — {quebec_time.strftime('%A, %B %d')}\n"
+    msg = f"🌅 GOOD MORNING — {quebec_time.strftime('%A, %B %d %Y')}\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"{quote}\n\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "🤖 ULTRON is analyzing today's matchups...\n"
-    msg += "📊 Daily picks coming soon — stay tuned!"
+
+    # Ajouter le résumé des matchs du jour
+    sports_config = [
+        ("basketball/nba", "🏀 NBA"),
+        ("hockey/nhl", "🏒 NHL"),
+        ("football/nfl", "🏈 NFL"),
+    ]
+    total_matches = 0
+    today = datetime.datetime.now().strftime("%Y%m%d")
+
+    for sport_path, sport_label in sports_config:
+        try:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
+            resp = requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                events = data.get('events', [])
+                if events:
+                    msg += f"\n{sport_label}: {len(events)} matchs aujourd'hui\n"
+                    for ev in events[:3]:  # max 3 par sport
+                        comp = ev.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('shortDisplayName', '?')
+                            home = competitors[1].get('team', {}).get('shortDisplayName', '?')
+                            # Heure du match
+                            date_str = ev.get('date', '')
+                            try:
+                                utc_dt = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ")
+                                utc_dt = utc_dt.replace(tzinfo=pytz.utc)
+                                qc_dt = utc_dt.astimezone(QUEBEC_TZ)
+                                heure_match = qc_dt.strftime('%H:%M')
+                            except Exception:
+                                heure_match = "?"
+                            msg += f"  • {away} @ {home} ({heure_match})\n"
+                    total_matches += len(events)
+        except Exception:
+            continue
+
+    if total_matches == 0:
+        msg += "\nAucun match programmé aujourd'hui.\n"
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🤖 ULTRON envoie les picks 1h avant chaque match!"
 
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
         if TELEGRAM_CHAT_ID_VIP:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
-        logger.info("✅ Message de motivation quotidien envoyé")
+        logger.info("✅ Motivation + résumé matinal envoyés")
     except Exception as e:
         logger.error(f"❌ Erreur motivation: {e}")
 
 
 async def auto_send_pronostics(context):
     """
-    AUTOMATION 1: Envoi automatique des pronostics.
-    Logique VIP/FREE:
-      - Canal FREE  → 1 seul pick (le meilleur)
-      - Canal VIP   → tous les picks restants
-    Tourne toutes les heures, vérifie les matchs du jour.
+    Toutes les 30 minutes: vérifie s'il y a des matchs qui commencent
+    dans moins d'1 heure et envoie les picks pour ces matchs.
+    FREE = 1 pick | VIP = tous les picks
     """
     if not TELEGRAM_CHAT_ID:
         return
 
     quebec_time = get_quebec_time()
+    now_utc = datetime.datetime.now(pytz.utc)
     date_key = quebec_time.strftime('%Y-%m-%d')
-    all_picks = []
 
-    for sport in ["nba", "nhl", "nfl"]:
-        picks = _build_picks_for_sport(sport)
-        for p in picks:
-            key = f"{date_key}_{p['label']}_{p['pick']}"
-            if key not in _notified_pronostics:
-                all_picks.append((p, key))
+    sports_config = [
+        ("basketball/nba", "nba", "🏀"),
+        ("hockey/nhl", "nhl", "🏒"),
+        ("football/nfl", "nfl", "🏈"),
+    ]
 
-    if not all_picks:
-        logger.info("🤖 Auto-pronostics: aucun nouveau pick à envoyer")
+    upcoming_matches = []  # [(sport_key, emoji, away, home)]
+
+    for sport_path, sport_key, emoji in sports_config:
+        try:
+            today = datetime.datetime.now().strftime("%Y%m%d")
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
+            resp = requests.get(url, timeout=8)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+
+            for event in data.get('events', []):
+                try:
+                    status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                    # Ignorer matchs terminés ou en cours
+                    if any(s in status_desc for s in ['final', 'completed', 'in progress']):
+                        continue
+
+                    date_str = event.get('date', '')
+                    utc_dt = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ")
+                    utc_dt = utc_dt.replace(tzinfo=pytz.utc)
+                    minutes_until = (utc_dt - now_utc).total_seconds() / 60
+
+                    # Match dans 30 à 90 minutes (fenêtre d'envoi)
+                    if 30 <= minutes_until <= 90:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('displayName', '?')
+                            home = competitors[1].get('team', {}).get('displayName', '?')
+                            notify_key = f"prono_{date_key}_{sport_key}_{away}_{home}"
+                            if notify_key not in _notified_pronostics:
+                                _notified_pronostics.add(notify_key)
+                                upcoming_matches.append((sport_key, emoji, away, home, utc_dt))
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"⚠️ auto_send_pronostics {sport_key}: {e}")
+
+    if not upcoming_matches:
         return
 
-    # Marquer tous comme notifiés
-    for _, key in all_picks:
-        _notified_pronostics.add(key)
+    # Générer les picks pour chaque match trouvé
+    all_picks = []
+    for sport_key, emoji, away, home, match_time in upcoming_matches:
+        try:
+            if sport_key == "nba":
+                pred = generate_prediction_nba(away, home)
+            elif sport_key == "nhl":
+                pred = generate_prediction_nhl(away, home)
+            else:
+                pred = generate_prediction_nfl(away, home)
 
-    picks_only = [p for p, _ in all_picks]
-    free_pick = picks_only[0]
-    vip_picks = picks_only[1:]
+            if pred and pred.get('status', '') != 'PASS':
+                qc_time = match_time.astimezone(QUEBEC_TZ)
+                all_picks.append({
+                    "label": f"{emoji} {away} @ {home}",
+                    "heure": qc_time.strftime('%H:%M'),
+                    "pick": pred.get('pick', ''),
+                    "odds": pred.get('odds', ''),
+                    "confidence": pred.get('confidence', 0),
+                    "ev": pred.get('ev_pct', ''),
+                })
+        except Exception:
+            continue
 
-    # ── Canal FREE : 1 pick ──────────────────────────────────────────────
-    heure = quebec_time.strftime('%H:%M')
-    msg_free = f"🤖 ULTRON - PICK DU JOUR ({heure} heure Québec)\n"
-    msg_free += "═" * 45 + "\n\n"
-    msg_free += f"🎯 {free_pick['label']}\n"
-    msg_free += f"   ✅ Pick: {free_pick['pick']} @ {free_pick['odds']}\n"
-    msg_free += f"   🔥 Confiance: {free_pick['confidence']}%\n\n"
-    msg_free += "━" * 45 + "\n"
-    msg_free += "💎 Rejoins le VIP pour tous les picks!\n"
+    if not all_picks:
+        return
+
+    all_picks.sort(key=lambda x: x['confidence'], reverse=True)
+    heure_qc = quebec_time.strftime('%H:%M')
+
+    # ── Canal FREE : 1 seul pick ─────────────────────────────────────────
+    free = all_picks[0]
+    msg_free = f"🎯 ULTRON — PICK GRATUIT ({heure_qc} heure Québec)\n"
+    msg_free += "═" * 42 + "\n\n"
+    msg_free += f"📌 {free['label']}\n"
+    msg_free += f"   ⏰ Match à {free['heure']} heure Québec\n"
+    msg_free += f"   ✅ Pick: {free['pick']} @ {free['odds']}\n"
+    msg_free += f"   🔥 Confiance: {free['confidence']}%\n\n"
+    msg_free += "═" * 42 + "\n"
+    msg_free += f"💎 +{len(all_picks)-1} picks réservés aux membres VIP!"
 
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
-        logger.info(f"✅ Auto-pronostics FREE envoyé ({len(picks_only)} picks total)")
+        logger.info(f"✅ Pick FREE envoyé: {free['label']}")
     except Exception as e:
-        logger.error(f"❌ Erreur envoi FREE: {e}")
+        logger.error(f"❌ Erreur FREE: {e}")
 
-    # ── Canal VIP : tous les autres picks ───────────────────────────────
-    if TELEGRAM_CHAT_ID_VIP and vip_picks:
-        msg_vip = f"💎 ULTRON VIP - PICKS COMPLETS ({heure} heure Québec)\n"
-        msg_vip += "═" * 45 + "\n\n"
-        # Inclure aussi le pick free dans le VIP
-        for i, p in enumerate(picks_only, 1):
-            emoji = "🥇" if i == 1 else f"{i}️⃣"
-            msg_vip += f"{emoji} {p['label']}\n"
+    # ── Canal VIP : tous les picks ────────────────────────────────────────
+    if TELEGRAM_CHAT_ID_VIP:
+        msg_vip = f"💎 ULTRON VIP — {len(all_picks)} PICKS ({heure_qc} heure Québec)\n"
+        msg_vip += "═" * 42 + "\n\n"
+        for i, p in enumerate(all_picks, 1):
+            emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else f"{i}️⃣")
+            msg_vip += f"{emoji_rank} {p['label']}\n"
+            msg_vip += f"   ⏰ Match à {p['heure']} heure Québec\n"
             msg_vip += f"   ✅ {p['pick']} @ {p['odds']}\n"
             msg_vip += f"   🔥 {p['confidence']}% | EV: {p['ev']}\n\n"
-        msg_vip += "═" * 45 + "\n"
-        msg_vip += f"📊 {len(picks_only)} picks | 🧠 Modèle ML ULTRON v6.0"
+        msg_vip += "═" * 42 + "\n"
+        msg_vip += "🧠 Modèle ML ULTRON v6.0 — Bonne chance!"
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
-            logger.info(f"✅ Auto-pronostics VIP envoyé ({len(picks_only)} picks)")
+            logger.info(f"✅ {len(all_picks)} picks VIP envoyés")
         except Exception as e:
-            logger.error(f"❌ Erreur envoi VIP: {e}")
+            logger.error(f"❌ Erreur VIP: {e}")
 
 
 async def auto_check_game_starts(context):
     """
-    AUTOMATION 2: Alerte quand un match commence (statut 'In Progress').
-    Vérifie toutes les 5 minutes via ESPN API.
-    Envoie dans le canal FREE et VIP.
+    Toutes les 5 minutes: alerte quand un match passe à 'In Progress'.
+    Envoyé dans FREE et VIP.
     """
     if not TELEGRAM_CHAT_ID:
         return
 
     sports_config = [
-        ("nba", "basketball/nba", "🏀"),
-        ("nhl", "hockey/nhl", "🏒"),
-        ("nfl", "football/nfl", "🏈"),
+        ("basketball/nba", "🏀"),
+        ("hockey/nhl", "🏒"),
+        ("football/nfl", "🏈"),
     ]
 
-    for sport_key, sport_path, emoji in sports_config:
+    for sport_path, emoji in sports_config:
+        sport_key = sport_path.split('/')[1]
         try:
             today = datetime.datetime.now().strftime("%Y%m%d")
             url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
@@ -2762,31 +2858,26 @@ async def auto_check_game_starts(context):
                     event_id = event.get('id', '')
                     notify_key = f"start_{sport_key}_{event_id}"
 
-                    # Si le match vient de commencer et pas encore notifié
                     if 'in progress' in status_desc and notify_key not in _notified_starts:
                         _notified_starts.add(notify_key)
-
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
                             away = competitors[0].get('team', {}).get('displayName', '?')
                             home = competitors[1].get('team', {}).get('displayName', '?')
-
                             msg = f"{emoji} MATCH EN COURS!\n"
                             msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
                             msg += f"  {away} @ {home}\n"
                             msg += f"  🕐 {get_quebec_time().strftime('%H:%M')} heure Québec\n"
-                            msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
-                            msg += f"Utilise /pronostics {sport_key} pour les picks!"
-
+                            msg += f"━━━━━━━━━━━━━━━━━━━━━"
                             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
                             if TELEGRAM_CHAT_ID_VIP:
                                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
-                            logger.info(f"✅ Alerte début match: {away} @ {home}")
+                            logger.info(f"✅ Alerte match en cours: {away} @ {home}")
                 except Exception:
                     continue
         except Exception as e:
-            logger.debug(f"⚠️ Erreur check starts {sport_key}: {e}")
+            logger.debug(f"⚠️ check_starts {sport_key}: {e}")
 
 
 def run_ultron_pipeline(bankroll=1000):
@@ -2813,18 +2904,18 @@ def main():
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
 
-    # Auto-pronostics: toutes les heures (3600 secondes), 1er envoi après 60s
-    job_queue.run_repeating(auto_send_pronostics, interval=3600, first=60)
-    logger.info("⏰ Auto-pronostics: toutes les heures")
+    # Auto-pronostics: toutes les 30 minutes, vérifie les matchs dans ~1h
+    job_queue.run_repeating(auto_send_pronostics, interval=1800, first=60)
+    logger.info("⏰ Auto-pronostics: toutes les 30 minutes (1h avant matchs)")
 
     # Alertes début de match: toutes les 5 minutes
     job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
     logger.info("🔔 Alertes matchs: toutes les 5 minutes")
 
-    # Message de motivation: tous les jours à 9h00 heure Québec (UTC-4)
+    # Message de motivation + résumé du jour: 9h00 heure Québec (UTC 13:00)
     import datetime as dt
     job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
-    logger.info("🌅 Motivation quotidienne: 9h00 heure Québec")
+    logger.info("🌅 Motivation + résumé quotidien: 9h00 heure Québec")
 
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
