@@ -36,7 +36,9 @@ def get_quebec_time():
     """Retourne l'heure actuelle en fuseau horaire Québec"""
     return datetime.datetime.now(QUEBEC_TZ)
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8649771086:AAH1Y6UNYphhvYaRxoD_5xilfwy8eMmZj5M')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables or .env file.")
 
 # Cache des matchs en temps réel
 MATCHES_CACHE = []

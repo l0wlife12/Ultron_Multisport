@@ -1,0 +1,73 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+config.env
+Ultron_MultiSport/config.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+bot_logs.txt
+logs/
+
+# Backups
+*.bak
+*.backup
+*_BACKUP_*
+
+# Cache
+.cache/
+*.cache
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Credentials (IMPORTANT - NEVER COMMIT)
+secrets.json
+*.pem
+*.key
+*.p12
+*.pfx
+.credentials
+
+# Large files
+*.zip
+*.tar.gz
+railway.json.bak
