@@ -2560,6 +2560,24 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
 _notified_starts = set()
 _notified_pronostics = set()
 
+MOTIVATION_MESSAGES = [
+    "🔥 Every expert was once a beginner. Trust the process, trust the data.",
+    "💎 Discipline beats motivation every single day. Show up, analyze, win.",
+    "🧠 The best bet you can make is on yourself. Stay sharp, stay focused.",
+    "⚡ Success is not luck — it's preparation meeting opportunity.",
+    "🎯 One good decision today builds tomorrow's winning streak.",
+    "🚀 The grind is silent. The results speak loud. Keep going.",
+    "💪 Consistency is what separates the amateurs from the professionals.",
+    "🌟 Today is a new opportunity to make smarter picks than yesterday.",
+    "🏆 Champions don't skip their morning routine. Neither should you.",
+    "🔑 Value is found by those who look harder. Look harder today.",
+    "📊 Trust the model. Trust the process. The edge is real.",
+    "⚔️ Stay patient. The right play at the right time — that's everything.",
+    "🎲 Randomness is temporary. Edge is permanent. Stay disciplined.",
+    "🌅 A new day, a new edge. Let ULTRON guide your picks.",
+    "💡 Smart money is quiet money. Analyze, decide, execute.",
+]
+
 def _build_picks_for_sport(sport: str):
     """Génère la liste des picks pour un sport donné. Retourne liste de dicts."""
     picks = []
@@ -2614,6 +2632,35 @@ def _build_picks_for_sport(sport: str):
     # Trier par confiance décroissante
     picks.sort(key=lambda x: x['confidence'], reverse=True)
     return picks
+
+
+async def auto_daily_motivation(context):
+    """
+    AUTOMATION 3: Message de motivation quotidien à 9h00 heure Québec.
+    Envoyé dans le canal FREE et VIP.
+    """
+    if not TELEGRAM_CHAT_ID:
+        return
+
+    import random
+    quebec_time = get_quebec_time()
+    day_index = quebec_time.timetuple().tm_yday % len(MOTIVATION_MESSAGES)
+    quote = MOTIVATION_MESSAGES[day_index]
+
+    msg = f"🌅 GOOD MORNING — {quebec_time.strftime('%A, %B %d')}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"{quote}\n\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🤖 ULTRON is analyzing today's matchups...\n"
+    msg += "📊 Daily picks coming soon — stay tuned!"
+
+    try:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        if TELEGRAM_CHAT_ID_VIP:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+        logger.info("✅ Message de motivation quotidien envoyé")
+    except Exception as e:
+        logger.error(f"❌ Erreur motivation: {e}")
 
 
 async def auto_send_pronostics(context):
@@ -2773,6 +2820,11 @@ def main():
     # Alertes début de match: toutes les 5 minutes
     job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
     logger.info("🔔 Alertes matchs: toutes les 5 minutes")
+
+    # Message de motivation: tous les jours à 9h00 heure Québec (UTC-4)
+    import datetime as dt
+    job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
+    logger.info("🌅 Motivation quotidienne: 9h00 heure Québec")
 
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
