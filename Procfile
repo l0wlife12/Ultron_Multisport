@@ -1,1 +1,1 @@
-worker: python Ultron_MultiSport/main.py
+worker: python -u main.py
