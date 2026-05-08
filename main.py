@@ -1,21 +1,48 @@
 #!/usr/bin/env python3
 import sys
 import os
+import threading
+import logging
 
-# Force charger SEULEMENT les env vars de Railway - PAS config.env
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Valider le token AVANT tout import
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
-    print("❌ ERROR: TELEGRAM_TOKEN not set in Railway environment variables")
+    logger.error("❌ TELEGRAM_TOKEN n'est pas configuré dans les variables d'environnement Railway")
     sys.exit(1)
 
-print(f"✅ Token loaded from environment: {'*' * 20}...{TELEGRAM_TOKEN[-10:]}")
+logger.info("✅ TELEGRAM_TOKEN trouvé")
 
-# Maintenant ajouter le chemin et importer
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Ultron_MultiSport'))
+# Serveur HTTP minimal pour Railway (le type 'web' exige un port HTTP ouvert)
+from flask import Flask
+health_app = Flask(__name__)
 
-# IMPORTANT: Remplacer le token dans l'environnement AVANT d'importer
-os.environ['TELEGRAM_TOKEN'] = TELEGRAM_TOKEN
+@health_app.route('/')
+def health():
+    return '🤖 ULTRON Multisports Bot actif', 200
 
-# Importer et lancer
+@health_app.route('/health')
+def healthcheck():
+    return {'status': 'ok', 'bot': 'ULTRON v6.0'}, 200
+
+def start_health_server():
+    port = int(os.getenv('PORT', 8080))
+    logger.info(f"🌐 Serveur santé démarré sur le port {port}")
+    health_app.run(host='0.0.0.0', port=port, use_reloader=False)
+
+# Lancer le serveur Flask dans un thread séparé (non-bloquant)
+health_thread = threading.Thread(target=start_health_server, daemon=True)
+health_thread.start()
+
+# Ajouter le dossier du bot au chemin Python
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Ultron_MultiSport'))
+
+# Lancer le bot Telegram (bloquant - tourne en continu)
+logger.info("🚀 Démarrage du bot ULTRON Multisports...")
 from ultron_multisports_v6_0 import main
 main()
