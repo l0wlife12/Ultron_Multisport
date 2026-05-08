@@ -81,7 +81,20 @@ def get_quebec_time():
 
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables or .env file.")
+    raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables.")
+
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TELEGRAM_CHAT_ID_VIP = os.getenv('TELEGRAM_CHAT_ID_VIP')
+ODDS_API_KEY = os.getenv('ODDS_API_KEY')
+
+if TELEGRAM_CHAT_ID:
+    logger.info(f"✅ TELEGRAM_CHAT_ID configuré")
+if TELEGRAM_CHAT_ID_VIP:
+    logger.info(f"✅ TELEGRAM_CHAT_ID_VIP configuré")
+if ODDS_API_KEY:
+    logger.info(f"✅ ODDS_API_KEY configuré")
+else:
+    logger.warning("⚠️ ODDS_API_KEY non configuré - cotes en temps réel désactivées")
 
 # Cache des matchs par sport
 MATCHES_CACHE_NBA = []
