@@ -877,7 +877,9 @@ def get_odds(away, home):
     """Fetch best odds for a matchup - wrapper for get_best_odds"""
     return get_best_odds(away, home)
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN', '8649771086:AAH1Y6UNYphhvYaRxoD_5xilfwy8eMmZj5M')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+if not TELEGRAM_TOKEN:
+    raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables or .env file.")
 
 # KEY PLAYERS DATA - Real-time injury/status info
 PLAYERS_DATA = {

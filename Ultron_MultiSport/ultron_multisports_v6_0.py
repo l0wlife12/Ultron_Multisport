@@ -2532,6 +2532,14 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Erreur /daily_props: {e}")
         await update.message.reply_text(f"❌ Erreur: {e}")
 
+def run_ultron_pipeline(bankroll=1000):
+    """
+    Lance le pipeline ULTRON (wrapper pour compatibilité avec main.py)
+    Cette fonction démarre le bot Telegram avec polling
+    """
+    logger.info(f"💰 Bankroll: ${bankroll}")
+    main()
+
 def main():
     """Démarre le bot Telegram"""
     app = Application.builder().token(TELEGRAM_TOKEN).build()
