@@ -575,17 +575,14 @@ def get_live_matches_nhl():
                     MATCHES_CACHE_TIME = datetime.datetime.now()
                     return daily_matches
         
-        # Fallback sur matchs de démonstration
-        logger.warning("⚠️ Aucun match NHL trouvé - Utilisant démo")
-        MATCHES_CACHE_NHL = DEMO_MATCHES_NHL
+        logger.info("ℹ️ Aucun match NHL dans les 7 prochains jours (hors saison)")
+        MATCHES_CACHE_NHL = []
         MATCHES_CACHE_TIME = datetime.datetime.now()
-        return DEMO_MATCHES_NHL
+        return []
     
     except Exception as e:
         logger.error(f"❌ Erreur NHL: {e}")
-        MATCHES_CACHE_NHL = DEMO_MATCHES_NHL
-        MATCHES_CACHE_TIME = datetime.datetime.now()
-        return DEMO_MATCHES_NHL
+        return []
 
 def get_live_matches_nfl():
     """Récupère les matchs NFL en direct (ESPN API)"""
@@ -632,17 +629,15 @@ def get_live_matches_nfl():
                     MATCHES_CACHE_TIME = datetime.datetime.now()
                     return daily_matches
         
-        # Fallback sur matchs de démonstration
-        logger.warning("⚠️ Aucun match NFL trouvé - Utilisant démo")
-        MATCHES_CACHE_NFL = DEMO_MATCHES_NFL
+        # Aucun match réel trouvé — ne jamais utiliser de faux matchs
+        logger.info("ℹ️ Aucun match NFL dans les 7 prochains jours (hors saison)")
+        MATCHES_CACHE_NFL = []
         MATCHES_CACHE_TIME = datetime.datetime.now()
-        return DEMO_MATCHES_NFL
+        return []
     
     except Exception as e:
         logger.error(f"❌ Erreur NFL: {e}")
-        MATCHES_CACHE_NFL = DEMO_MATCHES_NFL
-        MATCHES_CACHE_TIME = datetime.datetime.now()
-        return DEMO_MATCHES_NFL
+        return []
 
 def get_live_matches_nba():
     """Récupère les matchs NBA en direct (nba_api > ESPN > DÉMO)"""
@@ -703,15 +698,12 @@ def get_live_matches_nba():
                     logger.info(f"✅ {len(daily_matches)} matchs NBA depuis ESPN")
                     return daily_matches
         
-        logger.warning("⚠️ Aucun match NBA trouvé sur ESPN - Utilisant démo")
+        logger.info("ℹ️ Aucun match NBA trouvé sur ESPN (hors saison?)")
     
     except Exception as e:
         logger.error(f"❌ Erreur ESPN NBA: {e}")
     
-    # Fallback final - démo
-    MATCHES_CACHE_NBA = DEMO_MATCHES_NBA
-    MATCHES_CACHE_TIME = datetime.datetime.now()
-    return DEMO_MATCHES_NBA
+    return []
 
 def find_team_nhl(name_input):
     """Trouve une équipe NHL par son nom - avec table de correspondance"""
@@ -1037,7 +1029,37 @@ def generate_prediction_nhl(away_team, home_team):
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
-    
+
+    # ── PUCK LINE (±1.5) ──────────────────────────────────────────────────
+    # Favoris fort (>60%) : on les joue -1.5 | Underdogs : +1.5
+    if blended_prob > 0.60:
+        spread_pick = f"{away_team.upper()} -1.5"
+        spread_conf = min(72, int(blended_prob * 100))
+        spread_odds = 2.10
+    elif blended_prob < 0.40:
+        spread_pick = f"{home_team.upper()} -1.5"
+        spread_conf = min(72, int((1.0 - blended_prob) * 100))
+        spread_odds = 2.10
+    else:
+        # Match serré → jouer le favori +1.5 (valeur sur l'underdog)
+        if ev_away > ev_home:
+            spread_pick = f"{away_team.upper()} +1.5"
+        else:
+            spread_pick = f"{home_team.upper()} +1.5"
+        spread_conf = 58
+        spread_odds = 1.65
+
+    # ── O/U (Total buts) ──────────────────────────────────────────────────
+    projected_total = away_stats["gf"] + home_stats["gf"]
+    ou_line = 5.5
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 15 + 50))
+    else:
+        ou_pick = f"UNDER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 15 + 50))
+    ou_odds = 1.909
+
     return {
         "pick": pick,
         "odds": f"{odds:.2f}",
@@ -1046,6 +1068,19 @@ def generate_prediction_nhl(away_team, home_team):
         "ev_pct": f"{ev*100:.2f}%",
         "status": status,
         "bookmaker": book,
+        # ML
+        "ml_pick": pick,
+        "ml_odds": f"{odds:.2f}",
+        "ml_confidence": confidence,
+        "ml_ev_pct": f"{ev*100:.2f}%",
+        # Puck Line
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_conf,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_conf,
     }
 
 def generate_prediction_nfl(away_team, home_team):
@@ -1103,7 +1138,32 @@ def generate_prediction_nfl(away_team, home_team):
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
-    
+
+    # ━━ SPREAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # point_diff > 0 → away favori
+    raw_spread = round(point_diff * 2) / 2  # arrondir au 0.5 près
+    if raw_spread > 0:
+        spread_pick = f"{away_team.upper()} -{raw_spread}"
+        spread_conf = min(72, int(blended_prob * 100) + 5)
+    elif raw_spread < 0:
+        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
+        spread_conf = min(72, int((1.0 - blended_prob) * 100) + 5)
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+        spread_conf = 50
+    spread_odds = 1.909
+
+    # ━━ O/U (Total) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    projected_total = away_stats["pf"] + home_stats["pf"]
+    ou_line = 45.5  # ligne typique NFL
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 3 + 50))
+    else:
+        ou_pick = f"UNDER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 3 + 50))
+    ou_odds = 1.909
+
     return {
         "pick": pick,
         "odds": f"{odds:.2f}",
@@ -1112,10 +1172,20 @@ def generate_prediction_nfl(away_team, home_team):
         "ev_pct": f"{ev*100:.2f}%",
         "status": status,
         "bookmaker": book,
+        # ML
+        "ml_pick": pick,
+        "ml_odds": f"{odds:.2f}",
+        "ml_confidence": confidence,
+        "ml_ev_pct": f"{ev*100:.2f}%",
+        # Spread
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_conf,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_conf,
     }
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BETTING VALUE & KELLY CRITERION FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
 def implied_probability(decimal_odds):
@@ -1916,7 +1986,35 @@ def generate_prediction_nba(away_team, home_team):
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
-    
+
+    # ── SPREAD ────────────────────────────────────────────────────────────
+    # Estimer le spread depuis les probabilités blendées
+    estimated_spread = (prob_away - 0.5) * 22.0  # ~pts défavorables pour home
+    raw_spread = round(estimated_spread * 2) / 2
+    if raw_spread > 0:
+        spread_pick = f"{away_team.upper()} -{raw_spread}"
+        spread_conf = min(72, int(prob_away * 100) + 3)
+    elif raw_spread < 0:
+        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
+        spread_conf = min(72, int(blended_prob * 100) + 3)
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+        spread_conf = 50
+    spread_odds = 1.909
+
+    # ── O/U (Total points) ───────────────────────────────────────────────
+    nba_away = NBA_TEAM_STATS.get(away_clean, {"ppg": 115.0, "pa": 112.0})
+    nba_home = NBA_TEAM_STATS.get(home_clean, {"ppg": 115.0, "pa": 112.0})
+    projected_total = nba_away["ppg"] + nba_home["ppg"]
+    ou_line = 225.5
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 2 + 50))
+    else:
+        ou_pick = f"UNDER {ou_line}"
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 2 + 50))
+    ou_odds = 1.909
+
     return {
         "pick": pick,
         "odds": f"{odds:.2f}",
@@ -1926,6 +2024,19 @@ def generate_prediction_nba(away_team, home_team):
         "status": status,
         "bookmaker": book,
         "model": model_source,
+        # ML
+        "ml_pick": pick,
+        "ml_odds": f"{odds:.2f}",
+        "ml_confidence": confidence,
+        "ml_ev_pct": f"{ev*100:.2f}%",
+        # Spread
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_conf,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_conf,
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2773,11 +2884,27 @@ async def auto_send_pronostics(context):
             else:
                 pred = generate_prediction_nfl(away, home)
 
-            if pred and pred.get('status', '') != 'PASS':
+            # Inclure même les picks PASS dans VIP (l'utilisateur décide)
+            if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}",
                     "heure": qc_time.strftime('%H:%M'),
+                    # ML
+                    "ml_pick": pred.get('ml_pick', pred.get('pick', '')),
+                    "ml_odds": pred.get('ml_odds', pred.get('odds', '')),
+                    "ml_confidence": pred.get('ml_confidence', pred.get('confidence', 0)),
+                    "ml_ev_pct": pred.get('ml_ev_pct', pred.get('ev_pct', '')),
+                    "ml_status": pred.get('status', ''),
+                    # Spread
+                    "spread_pick": pred.get('spread_pick', ''),
+                    "spread_odds": pred.get('spread_odds', ''),
+                    "spread_confidence": pred.get('spread_confidence', 0),
+                    # O/U
+                    "ou_pick": pred.get('ou_pick', ''),
+                    "ou_odds": pred.get('ou_odds', ''),
+                    "ou_confidence": pred.get('ou_confidence', 0),
+                    # pick FREE = ML pick
                     "pick": pred.get('pick', ''),
                     "odds": pred.get('odds', ''),
                     "confidence": pred.get('confidence', 0),
@@ -2792,16 +2919,16 @@ async def auto_send_pronostics(context):
     all_picks.sort(key=lambda x: x['confidence'], reverse=True)
     heure_qc = quebec_time.strftime('%H:%M')
 
-    # ── Canal FREE : 1 seul pick ─────────────────────────────────────────
+    # ── Canal FREE : 1 seul pick ML ───────────────────────────────────────
     free = all_picks[0]
     msg_free = f"🎯 ULTRON — PICK GRATUIT ({heure_qc} heure Québec)\n"
     msg_free += "═" * 42 + "\n\n"
     msg_free += f"📌 {free['label']}\n"
     msg_free += f"   ⏰ Match à {free['heure']} heure Québec\n"
-    msg_free += f"   ✅ Pick: {free['pick']} @ {free['odds']}\n"
-    msg_free += f"   🔥 Confiance: {free['confidence']}%\n\n"
+    msg_free += f"   ✅ ML: {free['ml_pick']} @ {free['ml_odds']}\n"
+    msg_free += f"   🔥 Confiance: {free['ml_confidence']}% | EV: {free['ml_ev_pct']}\n\n"
     msg_free += "═" * 42 + "\n"
-    msg_free += f"💎 +{len(all_picks)-1} picks réservés aux membres VIP!"
+    msg_free += f"💎 Spread + O/U + {len(all_picks)-1} autres picks → VIP!"
 
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
@@ -2809,21 +2936,24 @@ async def auto_send_pronostics(context):
     except Exception as e:
         logger.error(f"❌ Erreur FREE: {e}")
 
-    # ── Canal VIP : tous les picks ────────────────────────────────────────
+    # ── Canal VIP : tous les picks avec ML + Spread + O/U ────────────────
     if TELEGRAM_CHAT_ID_VIP:
-        msg_vip = f"💎 ULTRON VIP — {len(all_picks)} PICKS ({heure_qc} heure Québec)\n"
-        msg_vip += "═" * 42 + "\n\n"
+        msg_vip = f"💎 ULTRON VIP — {len(all_picks)} MATCH(S) ({heure_qc} heure Québec)\n"
+        msg_vip += "═" * 44 + "\n\n"
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else f"{i}️⃣")
-            msg_vip += f"{emoji_rank} {p['label']}\n"
-            msg_vip += f"   ⏰ Match à {p['heure']} heure Québec\n"
-            msg_vip += f"   ✅ {p['pick']} @ {p['odds']}\n"
-            msg_vip += f"   🔥 {p['confidence']}% | EV: {p['ev']}\n\n"
-        msg_vip += "═" * 42 + "\n"
+            msg_vip += f"{emoji_rank} {p['label']}  ⏰ {p['heure']}\n"
+            msg_vip += f"   📊 ML:     {p['ml_pick']} @ {p['ml_odds']}  ({p['ml_confidence']}%) {p['ml_status']}\n"
+            if p['spread_pick']:
+                msg_vip += f"   📏 SPREAD: {p['spread_pick']} @ {p['spread_odds']}  ({p['spread_confidence']}%)\n"
+            if p['ou_pick']:
+                msg_vip += f"   🔢 O/U:    {p['ou_pick']} @ {p['ou_odds']}  ({p['ou_confidence']}%)\n"
+            msg_vip += f"   💰 EV: {p['ml_ev_pct']}\n\n"
+        msg_vip += "═" * 44 + "\n"
         msg_vip += "🧠 Modèle ML ULTRON v6.0 — Bonne chance!"
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
-            logger.info(f"✅ {len(all_picks)} picks VIP envoyés")
+            logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U)")
         except Exception as e:
             logger.error(f"❌ Erreur VIP: {e}")
 
