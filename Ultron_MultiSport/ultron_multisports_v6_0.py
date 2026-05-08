@@ -3112,14 +3112,18 @@ async def auto_send_pronostics(context):
 
     # ── Canal FREE : 1 seul pick ML ───────────────────────────────────────
     free = all_picks[0]
-    msg_free = f"🎯 ULTRON — PICK GRATUIT ({heure_qc} heure Québec)\n"
-    msg_free += "═" * 42 + "\n\n"
-    msg_free += f"📌 {free['label']}\n"
-    msg_free += f"   ⏰ Match à {free['heure']} heure Québec\n"
-    msg_free += f"   ✅ ML: {free['ml_pick']} @ {free['ml_odds']}\n"
-    msg_free += f"   🔥 Confiance: {free['ml_confidence']}% | EV: {free['ml_ev_pct']}\n\n"
-    msg_free += "═" * 42 + "\n"
-    msg_free += f"💎 Spread + O/U + {len(all_picks)-1} autres picks → VIP!"
+    msg_free  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg_free += f"🎯  U L T R O N  —  P I C K  G R A T U I T\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg_free += f"🏟️  {free['label']}\n"
+    msg_free += f"🕐  Match à  {free['heure']}  (heure Québec)\n\n"
+    msg_free += f"✅  {free['ml_pick']}\n"
+    msg_free += f"💵  Cote :  {free['ml_odds']}\n"
+    msg_free += f"🔥  Confiance :  {free['ml_confidence']}%\n"
+    msg_free += f"📈  EV :  {free['ml_ev_pct']}\n\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg_free += f"💎  Spread + O/U + {len(all_picks)-1} autre(s) pick(s)\n"
+    msg_free += "     disponibles en  V I P  ↑"
 
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
@@ -3129,23 +3133,32 @@ async def auto_send_pronostics(context):
 
     # ── Canal VIP : tous les picks avec ML + Spread + O/U ────────────────
     if TELEGRAM_CHAT_ID_VIP:
-        msg_vip = f"💎 ULTRON VIP — {len(all_picks)} MATCH(S) ({heure_qc} heure Québec)\n"
-        msg_vip += "═" * 44 + "\n\n"
+        src_label = "🟢 Cotes live" if any(p.get('source') == '🟢' for p in all_picks) else "📊 Modèle ML"
+        msg_vip  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_vip += f"💎  U L T R O N  V I P\n"
+        msg_vip += f"     {len(all_picks)} MATCH(S)  •  {heure_qc}  •  {src_label}\n"
+        msg_vip += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         for i, p in enumerate(all_picks, 1):
-            emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else f"{i}️⃣")
+            emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
-            msg_vip += f"{emoji_rank} {p['label']}  ⏰ {p['heure']}  {src}\n"
-            msg_vip += f"   📊 ML:     {p['ml_pick']} @ {p['ml_odds']}  ({p['ml_confidence']}%) {p['ml_status']}\n"
+            msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
+            msg_vip += f"🕐  {p['heure']}  (heure Québec)\n\n"
+            msg_vip += f"   📊  ML\n"
+            msg_vip += f"        {p['ml_pick']}\n"
+            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_confidence']}%  •  {p['ml_status']}\n"
             if p['spread_pick']:
-                msg_vip += f"   📏 SPREAD: {p['spread_pick']} @ {p['spread_odds']}  ({p['spread_confidence']}%)\n"
+                msg_vip += f"\n   📏  SPREAD\n"
+                msg_vip += f"        {p['spread_pick']}\n"
+                msg_vip += f"        Cote {p['spread_odds']}  •  {p['spread_confidence']}%\n"
             if p['ou_pick']:
-                msg_vip += f"   🔢 O/U:    {p['ou_pick']} @ {p['ou_odds']}  ({p['ou_confidence']}%)\n"
-            msg_vip += f"   💰 EV: {p['ml_ev_pct']}\n\n"
-        msg_vip += "═" * 44 + "\n"
-        live_count = sum(1 for p in all_picks if p.get('source') == '🟢')
-        if live_count:
-            msg_vip += f"🟢 {live_count} match(s) avec cotes live | 📊 calculées\n"
-        msg_vip += "🧠 Modèle ML ULTRON v6.0 — Bonne chance!"
+                msg_vip += f"\n   🔢  TOTAL (O/U)\n"
+                msg_vip += f"        {p['ou_pick']}\n"
+                msg_vip += f"        Cote {p['ou_odds']}  •  {p['ou_confidence']}%\n"
+            msg_vip += f"\n   💰  EV :  {p['ml_ev_pct']}\n"
+            msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+        msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
+        msg_vip += "     Bonne chance! 🍀"
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
             logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U)")
