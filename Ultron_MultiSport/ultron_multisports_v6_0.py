@@ -54,7 +54,14 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 sys.stdout.reconfigure(encoding='utf-8')
-load_dotenv('config.env')
+
+# ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
+# config.env est ignoré par .gitignore donc n'existe pas sur Railway
+# Cela évite de charger un ancien token depuis config.env
+IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
+if not IS_RAILWAY and os.path.exists('config.env'):
+    # En développement local: on peut charger config.env
+    load_dotenv('config.env')
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
