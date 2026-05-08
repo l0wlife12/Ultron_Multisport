@@ -1,6 +1,6 @@
 requests
 python-dotenv
-python-telegram-bot>=20.0
+python-telegram-bot[job-queue]>=20.0
 pytz
 nba-api
 scikit-learn

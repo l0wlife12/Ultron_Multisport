@@ -2552,18 +2552,206 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Erreur /daily_props: {e}")
         await update.message.reply_text(f"❌ Erreur: {e}")
 
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTOMATIONS - ENVOIS AUTOMATIQUES
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Suivi des matchs déjà notifiés (évite les doublons)
+_notified_starts = set()
+_notified_pronostics = set()
+
+def _build_picks_for_sport(sport: str):
+    """Génère la liste des picks pour un sport donné. Retourne liste de dicts."""
+    picks = []
+    if sport == "nba":
+        matches = get_live_matches_nba()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nba(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"🏀 {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    elif sport == "nhl":
+        matches = get_live_matches_nhl()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nhl(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"🏒 {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    elif sport == "nfl":
+        matches = get_live_matches_nfl()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nfl(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"🏈 {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    # Trier par confiance décroissante
+    picks.sort(key=lambda x: x['confidence'], reverse=True)
+    return picks
+
+
+async def auto_send_pronostics(context):
+    """
+    AUTOMATION 1: Envoi automatique des pronostics.
+    Logique VIP/FREE:
+      - Canal FREE  → 1 seul pick (le meilleur)
+      - Canal VIP   → tous les picks restants
+    Tourne toutes les heures, vérifie les matchs du jour.
+    """
+    if not TELEGRAM_CHAT_ID:
+        return
+
+    quebec_time = get_quebec_time()
+    date_key = quebec_time.strftime('%Y-%m-%d')
+    all_picks = []
+
+    for sport in ["nba", "nhl", "nfl"]:
+        picks = _build_picks_for_sport(sport)
+        for p in picks:
+            key = f"{date_key}_{p['label']}_{p['pick']}"
+            if key not in _notified_pronostics:
+                all_picks.append((p, key))
+
+    if not all_picks:
+        logger.info("🤖 Auto-pronostics: aucun nouveau pick à envoyer")
+        return
+
+    # Marquer tous comme notifiés
+    for _, key in all_picks:
+        _notified_pronostics.add(key)
+
+    picks_only = [p for p, _ in all_picks]
+    free_pick = picks_only[0]
+    vip_picks = picks_only[1:]
+
+    # ── Canal FREE : 1 pick ──────────────────────────────────────────────
+    heure = quebec_time.strftime('%H:%M')
+    msg_free = f"🤖 ULTRON - PICK DU JOUR ({heure} heure Québec)\n"
+    msg_free += "═" * 45 + "\n\n"
+    msg_free += f"🎯 {free_pick['label']}\n"
+    msg_free += f"   ✅ Pick: {free_pick['pick']} @ {free_pick['odds']}\n"
+    msg_free += f"   🔥 Confiance: {free_pick['confidence']}%\n\n"
+    msg_free += "━" * 45 + "\n"
+    msg_free += "💎 Rejoins le VIP pour tous les picks!\n"
+
+    try:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
+        logger.info(f"✅ Auto-pronostics FREE envoyé ({len(picks_only)} picks total)")
+    except Exception as e:
+        logger.error(f"❌ Erreur envoi FREE: {e}")
+
+    # ── Canal VIP : tous les autres picks ───────────────────────────────
+    if TELEGRAM_CHAT_ID_VIP and vip_picks:
+        msg_vip = f"💎 ULTRON VIP - PICKS COMPLETS ({heure} heure Québec)\n"
+        msg_vip += "═" * 45 + "\n\n"
+        # Inclure aussi le pick free dans le VIP
+        for i, p in enumerate(picks_only, 1):
+            emoji = "🥇" if i == 1 else f"{i}️⃣"
+            msg_vip += f"{emoji} {p['label']}\n"
+            msg_vip += f"   ✅ {p['pick']} @ {p['odds']}\n"
+            msg_vip += f"   🔥 {p['confidence']}% | EV: {p['ev']}\n\n"
+        msg_vip += "═" * 45 + "\n"
+        msg_vip += f"📊 {len(picks_only)} picks | 🧠 Modèle ML ULTRON v6.0"
+        try:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
+            logger.info(f"✅ Auto-pronostics VIP envoyé ({len(picks_only)} picks)")
+        except Exception as e:
+            logger.error(f"❌ Erreur envoi VIP: {e}")
+
+
+async def auto_check_game_starts(context):
+    """
+    AUTOMATION 2: Alerte quand un match commence (statut 'In Progress').
+    Vérifie toutes les 5 minutes via ESPN API.
+    Envoie dans le canal FREE et VIP.
+    """
+    if not TELEGRAM_CHAT_ID:
+        return
+
+    sports_config = [
+        ("nba", "basketball/nba", "🏀"),
+        ("nhl", "hockey/nhl", "🏒"),
+        ("nfl", "football/nfl", "🏈"),
+    ]
+
+    for sport_key, sport_path, emoji in sports_config:
+        try:
+            today = datetime.datetime.now().strftime("%Y%m%d")
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
+            resp = requests.get(url, timeout=8)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+
+            for event in data.get('events', []):
+                try:
+                    status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                    event_id = event.get('id', '')
+                    notify_key = f"start_{sport_key}_{event_id}"
+
+                    # Si le match vient de commencer et pas encore notifié
+                    if 'in progress' in status_desc and notify_key not in _notified_starts:
+                        _notified_starts.add(notify_key)
+
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('displayName', '?')
+                            home = competitors[1].get('team', {}).get('displayName', '?')
+
+                            msg = f"{emoji} MATCH EN COURS!\n"
+                            msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            msg += f"  {away} @ {home}\n"
+                            msg += f"  🕐 {get_quebec_time().strftime('%H:%M')} heure Québec\n"
+                            msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            msg += f"Utilise /pronostics {sport_key} pour les picks!"
+
+                            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+                            if TELEGRAM_CHAT_ID_VIP:
+                                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+                            logger.info(f"✅ Alerte début match: {away} @ {home}")
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"⚠️ Erreur check starts {sport_key}: {e}")
+
+
 def run_ultron_pipeline(bankroll=1000):
-    """
-    Lance le pipeline ULTRON (wrapper pour compatibilité avec main.py)
-    Cette fonction démarre le bot Telegram avec polling
-    """
+    """Lance le pipeline ULTRON (wrapper pour compatibilité avec main.py)"""
     logger.info(f"💰 Bankroll: ${bankroll}")
     main()
 
 def main():
-    """Démarre le bot Telegram"""
+    """Démarre le bot Telegram avec toutes les automations"""
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
+
+    # ── Commandes manuelles ──────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
@@ -2574,24 +2762,34 @@ def main():
     app.add_handler(CommandHandler("all_props", all_props))
     app.add_handler(CommandHandler("daily_props", daily_props))
     app.add_handler(CommandHandler("help", help_cmd))
-    
+
+    # ── Automations (JobQueue) ───────────────────────────────────────────
+    job_queue = app.job_queue
+
+    # Auto-pronostics: toutes les heures (3600 secondes), 1er envoi après 60s
+    job_queue.run_repeating(auto_send_pronostics, interval=3600, first=60)
+    logger.info("⏰ Auto-pronostics: toutes les heures")
+
+    # Alertes début de match: toutes les 5 minutes
+    job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
+    logger.info("🔔 Alertes matchs: toutes les 5 minutes")
+
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
-    
-    # Entraîner le modèle ML NBA au démarrage
+
+    # Modèles ML
     if SKLEARN_AVAILABLE:
         logger.info("🤖 Initialisation du modèle ML NBA...")
         train_nba_model()
     else:
         logger.warning("⚠️ scikit-learn non disponible - Utilisant modèle statistique")
-    
-    # Entraîner le modèle Player Props XGBoost
+
     if XGBOOST_AVAILABLE:
         logger.info("🤖 Initialisation du modèle Player Props XGBoost...")
         train_player_props_model()
     else:
         logger.warning("⚠️ XGBoost non disponible - Prédictions player props désactivées")
-    
+
     app.run_polling()
 
 if __name__ == "__main__":
