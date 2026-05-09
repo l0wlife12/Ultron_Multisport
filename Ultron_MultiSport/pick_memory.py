@@ -27,9 +27,11 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-# ── Chemin du fichier d'historique ──────────────────────────────────────────
+# ── Chemins des fichiers ─────────────────────────────────────────────────────
 # Utilise /data si un Volume Railway est monté, sinon dossier courant
-HISTORY_FILE = "/data/picks_history.json" if os.path.isdir("/data") else "picks_history.json"
+_BASE = "/data" if os.path.isdir("/data") else "."
+HISTORY_FILE = os.path.join(_BASE, "picks_history.json")
+BACKUP_META_FILE = os.path.join(_BASE, "backup_meta.json")
 
 SPORT_PATHS = {
     "NBA": "basketball/nba",
@@ -349,6 +351,100 @@ def format_daily_report(days: int = 7) -> str:
     msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg += "🤖  Ultron se note lui-même — données ESPN"
     return msg
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SAUVEGARDE / RESTAURATION TELEGRAM
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def backup_to_telegram(bot, chat_id: str) -> bool:
+    """
+    Envoie picks_history.json comme document Telegram (fichier attaché).
+    Sauvegarde le file_id dans backup_meta.json pour la restauration.
+    Retourne True si succès.
+    """
+    if not os.path.exists(HISTORY_FILE):
+        logger.info("backup_to_telegram: rien à sauvegarder")
+        return False
+
+    history = load_history()
+    picks_count = len(history.get("picks", []))
+    wins   = history.get("stats", {}).get("wins", 0)
+    losses = history.get("stats", {}).get("losses", 0)
+    wr     = history.get("stats", {}).get("win_rate", 0.0)
+
+    caption = (
+        f"🔒 ULTRON — Backup mémoire\n"
+        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"📊 {picks_count} picks  •  {wins}W–{losses}L  •  {wr:.1%} WR"
+    )
+
+    try:
+        with open(HISTORY_FILE, "rb") as f:
+            msg = await bot.send_document(
+                chat_id=chat_id,
+                document=f,
+                filename="picks_history.json",
+                caption=caption,
+            )
+        file_id = msg.document.file_id
+        meta = {
+            "file_id":     file_id,
+            "backed_up_at": datetime.now().isoformat(),
+            "picks_count": picks_count,
+        }
+        with open(BACKUP_META_FILE, "w", encoding="utf-8") as mf:
+            json.dump(meta, mf)
+        logger.info(f"✅ Backup Telegram OK — {picks_count} picks sauvegardés")
+        return True
+    except Exception as e:
+        logger.error(f"❌ backup_to_telegram: {e}")
+        return False
+
+
+async def restore_from_telegram(bot, chat_id: str) -> bool:
+    """
+    Si picks_history.json est absent (après un redéploiement Railway),
+    télécharge le dernier backup depuis Telegram et restaure le fichier.
+    Retourne True si une restauration a eu lieu.
+    """
+    if os.path.exists(HISTORY_FILE):
+        return False  # déjà présent, rien à faire
+
+    if not os.path.exists(BACKUP_META_FILE):
+        logger.info("restore_from_telegram: aucun backup_meta.json trouvé")
+        return False
+
+    try:
+        with open(BACKUP_META_FILE, "r", encoding="utf-8") as mf:
+            meta = json.load(mf)
+        file_id = meta.get("file_id")
+        if not file_id:
+            return False
+
+        tg_file = await bot.get_file(file_id)
+        await tg_file.download_to_drive(HISTORY_FILE)
+
+        picks_count = meta.get("picks_count", "?")
+        backed_at   = meta.get("backed_up_at", "?")[:16]
+        logger.info(f"✅ Historique restauré depuis Telegram ({picks_count} picks, backup du {backed_at})")
+
+        # Notifie l'admin
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"♻️  ULTRON — Mémoire restaurée\n"
+                    f"📅  Backup du {backed_at}\n"
+                    f"📊  {picks_count} picks récupérés"
+                ),
+            )
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.error(f"❌ restore_from_telegram: {e}")
+        return False
 
 
 def format_result_notification(updated_picks: list) -> str:

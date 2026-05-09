@@ -75,6 +75,8 @@ try:
         check_and_update_results,
         format_daily_report,
         format_result_notification,
+        backup_to_telegram,
+        restore_from_telegram,
     )
     PICK_MEMORY_AVAILABLE = True
 except ImportError:
@@ -3361,9 +3363,26 @@ def run_ultron_pipeline(bankroll=1000):
     logger.info(f"💰 Bankroll: ${bankroll}")
     main()
 
+async def _post_init(app):
+    """Exécuté au démarrage du bot — restaure la mémoire depuis Telegram si nécessaire."""
+    if PICK_MEMORY_AVAILABLE and TELEGRAM_CHAT_ID:
+        try:
+            restored = await restore_from_telegram(app.bot, TELEGRAM_CHAT_ID)
+            if restored:
+                logger.info("♻️ Mémoire picks restaurée depuis Telegram")
+        except Exception as e:
+            logger.warning(f"⚠️ Restauration Telegram échouée: {e}")
+
+
+async def auto_backup_memory(context):
+    """Toutes les 6h : sauvegarde picks_history.json dans Telegram."""
+    if PICK_MEMORY_AVAILABLE and TELEGRAM_CHAT_ID:
+        await backup_to_telegram(context.bot, TELEGRAM_CHAT_ID)
+
+
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
 
     # ── Commandes manuelles ──────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
@@ -3389,6 +3408,10 @@ def main():
     if PICK_MEMORY_AVAILABLE:
         job_queue.run_repeating(auto_check_results, interval=7200, first=120)
         logger.info("📊 Auto-résultats: toutes les 2h via ESPN")
+
+        # Backup Telegram: toutes les 6h (sauvegarde avant redéploiement)
+        job_queue.run_repeating(auto_backup_memory, interval=21600, first=300)
+        logger.info("🔒 Backup Telegram mémoire: toutes les 6h")
 
     # Alertes début de match: toutes les 5 minutes
     job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
