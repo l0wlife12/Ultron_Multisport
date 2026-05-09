@@ -68,6 +68,19 @@ except ImportError:
     ESPN_CONTEXT_AVAILABLE = False
     logger = logging.getLogger(__name__)
 
+# Mémoire des picks — auto-notation des résultats via ESPN
+try:
+    from pick_memory import (
+        save_pick,
+        check_and_update_results,
+        format_daily_report,
+        format_result_notification,
+    )
+    PICK_MEMORY_AVAILABLE = True
+except ImportError:
+    PICK_MEMORY_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3225,6 +3238,71 @@ async def auto_send_pronostics(context):
         except Exception as e:
             logger.error(f"❌ Erreur VIP: {e}")
 
+    # ── Mémorisation des picks (auto-notation) ────────────────────────────
+    if PICK_MEMORY_AVAILABLE:
+        today_date = quebec_time.strftime('%Y-%m-%d')
+        for p in all_picks:
+            # On extrait le sport_key depuis le label (emoji)
+            sport_label = "NBA" if "🏀" in p["label"] else ("NHL" if "🏒" in p["label"] else "NFL")
+            # Extrait away/home depuis le label ex: "🏀 Boston Celtics @ Miami Heat"
+            label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
+            parts = label_clean.split(" @ ")
+            away_t = parts[0].strip() if len(parts) == 2 else p["label"]
+            home_t = parts[1].strip() if len(parts) == 2 else ""
+            save_pick(
+                sport=sport_label,
+                away_team=away_t,
+                home_team=home_t,
+                pick_type="ML",
+                pick_team=p["ml_pick"].replace(" ML", "").strip().title(),
+                odds=p["ml_odds"],
+                confidence=p["ml_confidence"],
+                ev_pct=p.get("ml_ev_pct", ""),
+                game_date=today_date,
+            )
+        logger.info(f"💾 {len(all_picks)} picks mémorisés pour auto-notation")
+
+
+async def auto_check_results(context):
+    """
+    Toutes les 2h: vérifie via ESPN les matchs terminés et note les picks.
+    Envoie une notification de résultats dans FREE + VIP si des picks ont été gradés.
+    """
+    if not PICK_MEMORY_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        updated = check_and_update_results()
+        if not updated:
+            logger.info("ℹ️ auto_check_results: aucun nouveau résultat")
+            return
+
+        notif = format_result_notification(updated)
+        if notif:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
+            logger.info(f"✅ Résultats notifiés: {len(updated)} picks gradés")
+    except Exception as e:
+        logger.error(f"❌ auto_check_results: {e}")
+
+
+async def cmd_stats(update, context):
+    """/stats — affiche le rapport de performance d'Ultron"""
+    if not PICK_MEMORY_AVAILABLE:
+        await update.message.reply_text("⚠️ Module de mémoire non disponible.")
+        return
+
+    # Parse l'argument optionnel: /stats 7 | /stats 30 | /stats 1 (défaut 7)
+    days = 7
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            pass
+
+    report = format_daily_report(days=days)
+    await update.message.reply_text(report)
+
 
 async def auto_check_game_starts(context):
     """
@@ -3298,6 +3376,7 @@ def main():
     app.add_handler(CommandHandler("all_props", all_props))
     app.add_handler(CommandHandler("daily_props", daily_props))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("stats", cmd_stats))
 
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
@@ -3305,6 +3384,11 @@ def main():
     # Auto-pronostics: toutes les 30 minutes, vérifie les matchs dans ~1h
     job_queue.run_repeating(auto_send_pronostics, interval=1800, first=60)
     logger.info("⏰ Auto-pronostics: toutes les 30 minutes (1h avant matchs)")
+
+    # Vérification des résultats: toutes les 2h (ESPN scoreboard final)
+    if PICK_MEMORY_AVAILABLE:
+        job_queue.run_repeating(auto_check_results, interval=7200, first=120)
+        logger.info("📊 Auto-résultats: toutes les 2h via ESPN")
 
     # Alertes début de match: toutes les 5 minutes
     job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
