@@ -74,6 +74,7 @@ try:
         save_pick,
         check_and_update_results,
         format_daily_report,
+        format_today_recap,
         format_result_notification,
         backup_to_telegram,
         restore_from_telegram,
@@ -3380,6 +3381,32 @@ async def auto_backup_memory(context):
         await backup_to_telegram(context.bot, TELEGRAM_CHAT_ID)
 
 
+async def auto_daily_recap(context):
+    """23h00 heure Québec : résumé de tous les picks du jour avec résultats."""
+    if not PICK_MEMORY_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        # Force une dernière vérification des résultats avant le récap
+        updated = check_and_update_results()
+        if updated:
+            notif = format_result_notification(updated)
+            if notif:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
+                if TELEGRAM_CHAT_ID_VIP:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
+
+        recap = format_today_recap()
+        if recap:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=recap)
+            logger.info("✅ Récap journalier envoyé")
+        else:
+            logger.info("ℹ️ Aucun pick aujourd'hui — pas de récap")
+    except Exception as e:
+        logger.error(f"❌ auto_daily_recap: {e}")
+
+
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
@@ -3421,6 +3448,10 @@ def main():
     import datetime as dt
     job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
     logger.info("🌅 Motivation + résumé quotidien: 9h00 heure Québec")
+
+    # Récap de fin de journée: 23h00 heure Québec (UTC 03:00)
+    job_queue.run_daily(auto_daily_recap, time=dt.time(hour=3, minute=0, tzinfo=pytz.utc))
+    logger.info("📋 Récap journalier picks: 23h00 heure Québec")
 
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")

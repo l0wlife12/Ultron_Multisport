@@ -295,6 +295,77 @@ def _current_streak(picks: list) -> str:
 # FORMATAGE DES RAPPORTS TELEGRAM
 # ─────────────────────────────────────────────────────────────────────────────
 
+def format_today_recap() -> str:
+    """
+    Résumé de fin de journée : tous les picks envoyés aujourd'hui
+    avec leur résultat (WIN / LOSS / en attente).
+    Envoyé automatiquement à 23h00 heure Québec.
+    """
+    history  = load_history()
+    picks    = history["picks"]
+    today    = datetime.now().strftime("%Y-%m-%d")
+    today_ps = [p for p in picks if p.get("date") == today]
+
+    if not today_ps:
+        return ""
+
+    wins    = sum(1 for p in today_ps if p["result"] == "WIN")
+    losses  = sum(1 for p in today_ps if p["result"] == "LOSS")
+    pending = sum(1 for p in today_ps if p["result"] is None)
+    total_g = wins + losses
+    wr      = wins / total_g if total_g > 0 else 0.0
+
+    if wins > losses:
+        bilan_icon = "🟢"
+    elif wins == losses:
+        bilan_icon = "🟡"
+    else:
+        bilan_icon = "🔴"
+
+    msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
+    msg += f"     {datetime.now().strftime('%A %d %B %Y').upper()}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    for p in today_ps:
+        sport_e = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(p["sport"], "🎯")
+        if p["result"] == "WIN":
+            res_icon = "✅"
+        elif p["result"] == "LOSS":
+            res_icon = "❌"
+        else:
+            res_icon = "⏳"
+
+        msg += f"\n{res_icon}  {sport_e}  {p['pick_team']}"
+        if p.get("pick_type") and p["pick_type"] != "ML":
+            msg += f"  ({p['pick_type']})"
+        msg += f"\n      Cote {p['odds']}  •  conf. {p['confidence']}%\n"
+        if p.get("score"):
+            msg += f"      📍 {p['score']}\n"
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += f"{bilan_icon}  Aujourd'hui :  {wins}W  –  {losses}L"
+    if total_g > 0:
+        msg += f"  ({wr:.1%} WR)"
+    if pending:
+        msg += f"  •  {pending} en attente"
+    msg += "\n"
+
+    # Bilan global saison
+    stats  = history["stats"]
+    s_wins = stats.get("wins", 0)
+    s_loss = stats.get("losses", 0)
+    s_tot  = s_wins + s_loss
+    s_wr   = s_wins / s_tot if s_tot > 0 else 0.0
+    streak = _current_streak(picks)
+    msg   += f"📈  Saison   :  {s_wins}W–{s_loss}L"
+    if s_tot > 0:
+        msg += f"  ({s_wr:.1%})"
+    msg += f"  •  Série {streak}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    return msg
+
+
 def format_daily_report(days: int = 7) -> str:
     """
     Génère un rapport de performance Telegram.
