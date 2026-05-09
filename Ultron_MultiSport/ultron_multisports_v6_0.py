@@ -55,6 +55,19 @@ except ImportError:
 warnings.filterwarnings('ignore')
 sys.stdout.reconfigure(encoding='utf-8')
 
+# ESPN Context — blessures + stats en temps réel
+try:
+    from espn_context import (
+        get_full_context_all_sports,
+        format_injuries_alert,
+        get_games_with_context,
+        find_game_context,
+    )
+    ESPN_CONTEXT_AVAILABLE = True
+except ImportError:
+    ESPN_CONTEXT_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -2904,7 +2917,7 @@ def _build_picks_for_sport(sport: str):
 
 
 async def auto_daily_motivation(context):
-    """9h00 Quebec: Message de motivation + résumé des matchs du jour"""
+    """9h00 Quebec: Message de motivation + résumé des matchs + alertes blessures"""
     if not TELEGRAM_CHAT_ID:
         return
 
@@ -2917,7 +2930,7 @@ async def auto_daily_motivation(context):
     msg += f"{quote}\n\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
-    # Ajouter le résumé des matchs du jour
+    # Résumé des matchs du jour
     sports_config = [
         ("basketball/nba", "🏀 NBA"),
         ("hockey/nhl", "🏒 NHL"),
@@ -2941,7 +2954,6 @@ async def auto_daily_motivation(context):
                         if len(competitors) >= 2:
                             away = competitors[0].get('team', {}).get('shortDisplayName', '?')
                             home = competitors[1].get('team', {}).get('shortDisplayName', '?')
-                            # Heure du match
                             date_str = ev.get('date', '')
                             try:
                                 utc_dt = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ")
@@ -2968,6 +2980,22 @@ async def auto_daily_motivation(context):
         logger.info("✅ Motivation + résumé matinal envoyés")
     except Exception as e:
         logger.error(f"❌ Erreur motivation: {e}")
+
+    # ── Alertes blessures (message séparé, seulement si matchs aujourd'hui) ──
+    if ESPN_CONTEXT_AVAILABLE and total_matches > 0:
+        try:
+            logger.info("🏥 ESPN: récupération blessures...")
+            espn_ctx = get_full_context_all_sports()
+            inj_msg = format_injuries_alert(espn_ctx)
+            if inj_msg:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=inj_msg)
+                if TELEGRAM_CHAT_ID_VIP:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=inj_msg)
+                logger.info("✅ Alertes blessures envoyées")
+            else:
+                logger.info("ℹ️ Aucune blessure clé aujourd'hui")
+        except Exception as e:
+            logger.error(f"❌ Erreur alertes blessures: {e}")
 
 
 async def auto_send_pronostics(context):
@@ -3038,6 +3066,17 @@ async def auto_send_pronostics(context):
     for sk in sports_in_play:
         live_odds_by_sport[sk] = fetch_odds_api(sk)
 
+    # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
+    espn_games_by_sport = {}
+    if ESPN_CONTEXT_AVAILABLE:
+        try:
+            for sk in sports_in_play:
+                espn_sport = sk.upper()  # "nba" → "NBA" etc.
+                espn_games_by_sport[sk] = get_games_with_context(espn_sport)
+            logger.info(f"✅ ESPN context chargé pour: {list(espn_games_by_sport.keys())}")
+        except Exception as e:
+            logger.warning(f"⚠️ ESPN context non disponible: {e}")
+
     # Générer les picks pour chaque match trouvé
     all_picks = []
     for sport_key, emoji, away, home, match_time in upcoming_matches:
@@ -3077,6 +3116,27 @@ async def auto_send_pronostics(context):
                     real_ou_odds = pred.get('ou_odds', '')
                     source_tag = "📊"  # cotes calculées
 
+                # ── Ajustement ESPN (blessures + stats) ──────────────────
+                base_ml_conf = pred.get('ml_confidence', pred.get('confidence', 50))
+                espn_tag = ""
+                ctx_game = None
+                if ESPN_CONTEXT_AVAILABLE and espn_games_by_sport.get(sport_key):
+                    ctx_game = find_game_context(away, home, espn_games_by_sport[sport_key])
+                if ctx_game:
+                    prob_adj = ctx_game.get('prob_adjustment', 0.0)
+                    if prob_adj != 0.0:
+                        # Determine if our pick aligns with ESPN's adjustment
+                        home_in_pick = home.lower() in real_ml_pick.lower()
+                        espn_agrees = (home_in_pick and prob_adj > 0) or \
+                                      (not home_in_pick and prob_adj < 0)
+                        delta = min(10, int(abs(prob_adj) * 100))
+                        if espn_agrees:
+                            base_ml_conf = min(97, base_ml_conf + delta)
+                            espn_tag = " 🏥✅"
+                        else:
+                            base_ml_conf = max(10, base_ml_conf - delta)
+                            espn_tag = " 🏥⚠️"
+
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}",
                     "heure": qc_time.strftime('%H:%M'),
@@ -3084,9 +3144,9 @@ async def auto_send_pronostics(context):
                     # ML
                     "ml_pick": real_ml_pick,
                     "ml_odds": real_ml_odds,
-                    "ml_confidence": pred.get('ml_confidence', pred.get('confidence', 0)),
+                    "ml_confidence": base_ml_conf,
                     "ml_ev_pct": pred.get('ml_ev_pct', pred.get('ev_pct', '')),
-                    "ml_status": pred.get('status', ''),
+                    "ml_status": pred.get('status', '') + espn_tag,
                     # Spread
                     "spread_pick": real_spread_pick,
                     "spread_odds": real_spread_odds,
@@ -3098,7 +3158,7 @@ async def auto_send_pronostics(context):
                     # pick FREE = ML
                     "pick": real_ml_pick,
                     "odds": real_ml_odds,
-                    "confidence": pred.get('confidence', 0),
+                    "confidence": base_ml_conf,
                     "ev": pred.get('ev_pct', ''),
                 })
         except Exception:
