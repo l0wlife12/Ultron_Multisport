@@ -3409,21 +3409,32 @@ async def auto_backup_memory(context):
 
 async def auto_daily_recap(context):
     """23h00 heure Québec : résumé de tous les picks du jour avec résultats."""
-    if not PICK_MEMORY_AVAILABLE or not TELEGRAM_CHAT_ID:
+    if not TELEGRAM_CHAT_ID:
+        logger.error("❌ auto_daily_recap: TELEGRAM_CHAT_ID non configuré")
         return
     try:
-        # Force une dernière vérification des résultats avant le récap
-        updated = check_and_update_results()
-        if updated:
-            notif = format_result_notification(updated)
-            if notif:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
-                if TELEGRAM_CHAT_ID_VIP:
-                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
+        if PICK_MEMORY_AVAILABLE:
+            # Force une dernière vérification des résultats avant le récap
+            updated = check_and_update_results()
+            if updated:
+                notif = format_result_notification(updated)
+                if notif:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
+                    if TELEGRAM_CHAT_ID_VIP:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
 
-        recap = format_today_recap()
+            recap = format_today_recap()
+        else:
+            import datetime as dt
+            recap = (
+                "📋  U L T R O N  —  R É C A P  D U  J O U R\n"
+                f"     {dt.datetime.now().strftime('%Y-%m-%d  %H:%M')} UTC\n\n"
+                "⚠️  Module mémoire non disponible (pick_memory).\n"
+                "    Vérifie les logs Railway pour l'erreur d'import."
+            )
+
         if not recap:
-            recap = format_daily_report(days=1)
+            recap = "📋 Récap 23h — aucun pick enregistré aujourd'hui."
 
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
         if TELEGRAM_CHAT_ID_VIP:
@@ -3431,6 +3442,13 @@ async def auto_daily_recap(context):
         logger.info("✅ Récap journalier envoyé")
     except Exception as e:
         logger.error(f"❌ auto_daily_recap: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"❌ Erreur récap 23h:\n{e}"
+            )
+        except Exception:
+            pass
 
 
 def main():
@@ -3476,9 +3494,17 @@ def main():
     job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
     logger.info("🌅 Motivation + résumé quotidien: 9h00 heure Québec")
 
-    # Récap de fin de journée: 23h00 heure Québec (UTC 03:00)
-    job_queue.run_daily(auto_daily_recap, time=dt.time(hour=3, minute=0, tzinfo=pytz.utc))
-    logger.info("📋 Récap journalier picks: 23h00 heure Québec")
+    # Récap de fin de journée: 23h00 heure Québec
+    # Calcule dynamiquement le délai jusqu'au prochain 23h00 Québec
+    # (évite le bug run_daily qui rate la soirée si le bot redémarre après 23h)
+    _tz_qc = pytz.timezone("America/Toronto")
+    _now_qc = dt.datetime.now(_tz_qc)
+    _target_qc = _now_qc.replace(hour=23, minute=0, second=0, microsecond=0)
+    if _target_qc <= _now_qc:
+        _target_qc += dt.timedelta(days=1)
+    _first_recap = max(10, (_target_qc - _now_qc).total_seconds())
+    job_queue.run_repeating(auto_daily_recap, interval=86400, first=_first_recap)
+    logger.info(f"📋 Récap journalier picks: 23h00 heure Québec (dans {int(_first_recap/3600)}h{int((_first_recap%3600)/60)}m)")
 
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
