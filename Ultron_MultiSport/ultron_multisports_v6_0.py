@@ -3307,6 +3307,32 @@ async def cmd_stats(update, context):
     await update.message.reply_text(report)
 
 
+async def cmd_recap(update, context):
+    """/recap — envoie le récap des picks d'aujourd'hui avec résultats"""
+    if not PICK_MEMORY_AVAILABLE:
+        await update.message.reply_text("⚠️ Module de mémoire non disponible.")
+        return
+    try:
+        # Vérification ESPN avant le récap
+        updated = check_and_update_results()
+        if updated:
+            notif = format_result_notification(updated)
+            if notif:
+                await update.message.reply_text(notif)
+
+        recap = format_today_recap()
+        if recap:
+            await update.message.reply_text(recap)
+        else:
+            await update.message.reply_text(
+                "📋 Aucun pick enregistré aujourd'hui.\n"
+                "Les picks sont sauvegardés automatiquement quand Ultron les envoie 1h avant un match."
+            )
+    except Exception as e:
+        logger.error(f"❌ cmd_recap: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+
 async def auto_check_game_starts(context):
     """
     Toutes les 5 minutes: alerte quand un match passe à 'In Progress'.
@@ -3423,6 +3449,7 @@ def main():
     app.add_handler(CommandHandler("daily_props", daily_props))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("recap", cmd_recap))
 
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
