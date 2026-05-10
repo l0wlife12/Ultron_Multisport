@@ -90,11 +90,14 @@ try:
         run_analysis,
         should_send_pick,
         format_brain_report,
+        get_model_adjustments,
         load_thresholds as brain_load_thresholds,
     )
     BRAIN_AVAILABLE = True
 except ImportError:
     BRAIN_AVAILABLE = False
+    def get_model_adjustments(sport):   # noqa: E302 — fallback silencieux
+        return {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0}
 
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
@@ -1196,11 +1199,20 @@ def generate_prediction_nhl(away_team, home_team):
     
     win_prob_away = max(0.05, min(0.95, win_prob_away))
     
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_nhl      = get_model_adjustments("NHL")
+    _model_w_nhl  = _adj_nhl.get("model_weight", 0.50)
+    _conf_cal_nhl = _adj_nhl.get("confidence_scale", 1.0)
+    _home_d_nhl   = _adj_nhl.get("home_advantage_delta", 0.0)
+    # Correction avantage domicile (win_prob_away = prob visiteur):
+    # home_delta > 0 → domicile performe + → réduire prob visiteur
+    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_nhl))
+
     # Consensus du marché
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     
-    blended_prob = (0.50 * win_prob_away) + (0.50 * market_consensus_away)
+    blended_prob = (_model_w_nhl * win_prob_away) + ((1.0 - _model_w_nhl) * market_consensus_away)
     blended_prob = max(0.05, min(0.95, blended_prob))
     
     # EV calculation
@@ -1212,13 +1224,13 @@ def generate_prediction_nhl(away_team, home_team):
     if ev_away > ev_home:
         pick = f"{away_team.upper()} ML"
         odds = best_away_ml
-        confidence = int(blended_prob * 100)
+        confidence = int(min(97, max(50, blended_prob * 100 * _conf_cal_nhl)))
         ev = ev_away
         book = odds_data["away_book"]
     else:
         pick = f"{home_team.upper()} ML"
         odds = best_home_ml
-        confidence = int((1.0 - blended_prob) * 100)
+        confidence = int(min(97, max(50, (1.0 - blended_prob) * 100 * _conf_cal_nhl)))
         ev = ev_home
         book = odds_data["home_book"]
     
@@ -1307,11 +1319,18 @@ def generate_prediction_nfl(away_team, home_team):
     
     win_prob_away = max(0.05, min(0.95, win_prob_away))
     
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_nfl      = get_model_adjustments("NFL")
+    _model_w_nfl  = _adj_nfl.get("model_weight", 0.50)
+    _conf_cal_nfl = _adj_nfl.get("confidence_scale", 1.0)
+    _home_d_nfl   = _adj_nfl.get("home_advantage_delta", 0.0)
+    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_nfl))
+
     # Consensus du marché
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     
-    blended_prob = (0.50 * win_prob_away) + (0.50 * market_consensus_away)
+    blended_prob = (_model_w_nfl * win_prob_away) + ((1.0 - _model_w_nfl) * market_consensus_away)
     blended_prob = max(0.05, min(0.95, blended_prob))
     
     # EV calculation
@@ -1321,13 +1340,13 @@ def generate_prediction_nfl(away_team, home_team):
     if ev_away > ev_home:
         pick = f"{away_team.upper()} ML"
         odds = best_away_ml
-        confidence = int(blended_prob * 100)
+        confidence = int(min(97, max(50, blended_prob * 100 * _conf_cal_nfl)))
         ev = ev_away
         book = odds_data["away_book"]
     else:
         pick = f"{home_team.upper()} ML"
         odds = best_home_ml
-        confidence = int((1.0 - blended_prob) * 100)
+        confidence = int(min(97, max(50, (1.0 - blended_prob) * 100 * _conf_cal_nfl)))
         ev = ev_home
         book = odds_data["home_book"]
     
@@ -2155,8 +2174,16 @@ def generate_prediction_nba(away_team, home_team):
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     prob_home_market = 1.0 - market_consensus_away
     
-    # Blended probability (60% modèle / 40% marché)
-    blended_prob = (0.60 * prob_home_win) + (0.40 * prob_home_market)
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_nba      = get_model_adjustments("NBA")
+    _model_w_nba  = _adj_nba.get("model_weight", 0.60)
+    _conf_cal_nba = _adj_nba.get("confidence_scale", 1.0)
+    _home_d_nba   = _adj_nba.get("home_advantage_delta", 0.0)
+    # Correction avantage domicile (prob_home_win)
+    prob_home_win = max(0.05, min(0.95, prob_home_win + _home_d_nba))
+
+    # Blended probability (poids appris)
+    blended_prob = (_model_w_nba * prob_home_win) + ((1.0 - _model_w_nba) * prob_home_market)
     blended_prob = max(0.05, min(0.95, blended_prob))
     
     # EV calculation
@@ -2169,13 +2196,13 @@ def generate_prediction_nba(away_team, home_team):
     if ev_away > ev_home:
         pick = f"{away_team.upper()} ML"
         odds = best_away_ml
-        confidence = int(prob_away * 100)
+        confidence = int(min(97, max(50, prob_away * 100 * _conf_cal_nba)))
         ev = ev_away
         book = odds_data["away_book"]
     else:
         pick = f"{home_team.upper()} ML"
         odds = best_home_ml
-        confidence = int(blended_prob * 100)
+        confidence = int(min(97, max(50, blended_prob * 100 * _conf_cal_nba)))
         ev = ev_home
         book = odds_data["home_book"]
     

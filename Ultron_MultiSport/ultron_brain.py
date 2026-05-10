@@ -55,6 +55,15 @@ DEFAULT_THRESHOLDS = {
         "NFL": ["ML"],
         "default": ["ML"],
     },
+    # Paramètres du modèle de prédiction (appris automatiquement)
+    "model_adjustments": {
+        # model_weight     : poids de notre modèle ML vs. cote du marché (0.0=marché pur, 1.0=modèle pur)
+        # confidence_scale : facteur de calibration (1.0=neutre, <1=on était trop confiant)
+        # home_advantage_delta : correction supplémentaire vers l'équipe domicile (prob)
+        "NBA": {"model_weight": 0.60, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+        "NHL": {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+        "NFL": {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+    },
     "sample_size": 0,
     "updated_at":  None,
     "roi_overall": 0.0,
@@ -286,6 +295,16 @@ def run_analysis(picks_history: dict = None) -> dict:
     return analysis
 
 
+def _is_home_pick(pick: dict) -> bool:
+    """Retourne True si le pick est sur l'équipe domicile."""
+    pick_team = pick.get("pick_team", "").lower()
+    home_team  = pick.get("home_team", "").lower()
+    if not home_team:
+        return False
+    home_parts = [w for w in home_team.split() if len(w) > 3]
+    return any(p in pick_team for p in home_parts)
+
+
 def _update_thresholds(analysis: dict, n_total: int):
     """
     Met à jour learned_thresholds.json selon les résultats de l'analyse.
@@ -320,18 +339,18 @@ def _update_thresholds(analysis: dict, n_total: int):
 
     # Meilleur type de pick par sport (si échantillon suffisant)
     by_type = analysis.get("by_pick_type", {})
+    try:
+        from pick_memory import load_history as _lh
+        all_graded_picks = [p for p in _lh()["picks"] if p.get("result") in ("WIN", "LOSS")]
+    except ImportError:
+        all_graded_picks = []
+
     for sport in ("NBA", "NHL", "NFL"):
+        sport_graded = [p for p in all_graded_picks if p.get("sport") == sport]
+
+        # Best pick types
         sport_picks_by_type: dict = defaultdict(list)
-        all_picks_all: list = []
-        try:
-            from pick_memory import load_history
-            all_picks_all = [
-                p for p in load_history()["picks"]
-                if p.get("sport") == sport and p.get("result") in ("WIN", "LOSS")
-            ]
-        except ImportError:
-            pass
-        for p in all_picks_all:
+        for p in sport_graded:
             sport_picks_by_type[p.get("pick_type", "ML")].append(p)
         best_types = []
         for pt, ps in sport_picks_by_type.items():
@@ -340,6 +359,69 @@ def _update_thresholds(analysis: dict, n_total: int):
                 best_types.append(pt)
         if best_types:
             thresholds["best_pick_types"][sport] = best_types
+
+        # ── Auto-calibration du modèle de prédiction ────────────────────
+        # Ne tourne que si on a suffisamment de picks gradés pour ce sport
+        n_sport = len(sport_graded)
+        if n_sport < MIN_SAMPLE:
+            continue
+
+        # Defaults par sport
+        default_mw = {"NBA": 0.60, "NHL": 0.50, "NFL": 0.50}.get(sport, 0.50)
+        if "model_adjustments" not in thresholds:
+            thresholds["model_adjustments"] = {}
+        cur = thresholds["model_adjustments"].get(sport, {
+            "model_weight":         default_mw,
+            "confidence_scale":     1.0,
+            "home_advantage_delta": 0.0,
+        })
+
+        # 1. Calibration de la confiance
+        #    Si Ultron dit 70% en moyenne mais gagne à 55% → scale = 0.786
+        avg_conf  = sum(p.get("confidence", 65) for p in sport_graded) / n_sport / 100.0
+        actual_wr = sum(1 for p in sport_graded if p["result"] == "WIN") / n_sport
+        if avg_conf > 0.01:
+            raw_scale = max(0.70, min(1.30, actual_wr / avg_conf))
+            # Mise à jour progressive (EWMA 80/20)
+            cur["confidence_scale"] = round(
+                0.80 * cur.get("confidence_scale", 1.0) + 0.20 * raw_scale, 4
+            )
+
+        # 2. Poids modèle vs marché
+        #    Overconfiant (+7%) → faire davantage confiance au marché
+        #    Underconfiant (−7%) → faire davantage confiance au modèle
+        gap = actual_wr - avg_conf
+        old_mw = cur.get("model_weight", default_mw)
+        if gap < -0.07:          # modèle systématiquement trop optimiste
+            new_mw = max(0.30, old_mw - 0.03)
+        elif gap > 0.07:         # modèle systématiquement sous-estime la force
+            new_mw = min(0.75, old_mw + 0.03)
+        else:
+            new_mw = old_mw      # dans la marge → pas de changement
+        cur["model_weight"] = round(new_mw, 4)
+
+        # 3. Correction de l'avantage domicile
+        #    Si les picks domicile gagnent bien plus que les picks visiteurs
+        #    → le modèle sous-estime l'avantage terrain → on additionne un delta
+        home_ps = [p for p in sport_graded if _is_home_pick(p)]
+        away_ps = [p for p in sport_graded if not _is_home_pick(p)]
+        if len(home_ps) >= 5 and len(away_ps) >= 5:
+            home_wr = sum(1 for p in home_ps if p["result"] == "WIN") / len(home_ps)
+            away_wr = sum(1 for p in away_ps if p["result"] == "WIN") / len(away_ps)
+            # Delta brut: home surpasse away → ajouter un bonus probabilité domicile
+            raw_delta = (home_wr - away_wr) * 0.12   # facteur d'amortissement
+            raw_delta = max(-0.05, min(0.05, raw_delta))
+            cur["home_advantage_delta"] = round(
+                0.80 * cur.get("home_advantage_delta", 0.0) + 0.20 * raw_delta, 4
+            )
+
+        thresholds["model_adjustments"][sport] = cur
+        logger.info(
+            f"🧠 Brain [{sport}]  mw={cur['model_weight']:.2f}  "
+            f"cal={cur['confidence_scale']:.3f}  "
+            f"home_δ={cur['home_advantage_delta']:+.3f}  "
+            f"WR={actual_wr:.1%}  n={n_sport}"
+        )
 
     _save_thresholds(thresholds)
     logger.info(
@@ -350,8 +432,31 @@ def _update_thresholds(analysis: dict, n_total: int):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# API PUBLIQUE : FILTRAGE DES PICKS
+# API PUBLIQUE : FILTRAGE + PARAMÈTRES APPRIS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def get_model_adjustments(sport: str) -> dict:
+    """
+    Retourne les paramètres appris du modèle de prédiction pour un sport.
+    Utilisé dans generate_prediction_nba/nhl/nfl() pour auto-calibrer.
+
+    Clés retournées:
+      model_weight         (float 0.30–0.75)  : poids modèle vs. marché
+      confidence_scale     (float 0.70–1.30)  : facteur de calibration confiance
+      home_advantage_delta (float -0.05–0.05) : correction probabilité domicile
+    """
+    defaults = {
+        "NBA": {"model_weight": 0.60, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+        "NHL": {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+        "NFL": {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0},
+    }
+    t = load_thresholds()
+    if t.get("sample_size", 0) < MIN_SAMPLE:
+        return defaults.get(sport, {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0})
+    return t.get("model_adjustments", {}).get(
+        sport, defaults.get(sport, {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0})
+    )
+
 
 def should_send_pick(sport: str, confidence: int, pick_type: str = "ML") -> bool:
     """
@@ -481,9 +586,11 @@ def format_brain_report(analysis: dict = None) -> str:
 
     # ── Seuils appris & recommandations ───────────────────────────────────
     msg += "─── SEUILS APPRIS ───────────────────\n"
+    model_adj = t.get("model_adjustments", {})
     for sport in ("NBA", "NHL", "NFL"):
         thresh = t["min_confidence"].get(sport, "—")
         opt    = opt_conf.get(sport, {})
+        adj    = model_adj.get(sport, {})
         if opt:
             o_roi = opt.get("roi", 0)
             o_wr  = opt.get("win_rate", 0)
@@ -493,6 +600,26 @@ def format_brain_report(analysis: dict = None) -> str:
             )
         else:
             msg += f"   {sport_emoji.get(sport,'')} {sport}  min conf = {thresh}%  (données insuffisantes)\n"
+    msg += "\n"
+
+    # ── Paramètres du modèle (calibration auto) ────────────────────────────
+    msg += "─── CALIBRATION MODÈLE ──────────────\n"
+    for sport in ("NBA", "NHL", "NFL"):
+        adj = model_adj.get(sport)
+        if not adj:
+            continue
+        mw   = adj.get("model_weight", 0.50)
+        cal  = adj.get("confidence_scale", 1.0)
+        hdel = adj.get("home_advantage_delta", 0.0)
+        cal_icon = "🟢" if 0.95 <= cal <= 1.05 else ("🟡" if 0.85 <= cal <= 1.15 else "🔴")
+        msg += (
+            f"   {sport_emoji.get(sport,'')} {sport}  "
+            f"modèle {mw:.0%} / marché {1-mw:.0%}  "
+            f"{cal_icon} cal={cal:.3f}  "
+            f"dom={hdel:+.3f}\n"
+        )
+    if not any(s in model_adj for s in ("NBA","NHL","NFL")):
+        msg += "   ⏳ En attente de données suffisantes\n"
     msg += "\n"
 
     # ── Verdict & conseil ─────────────────────────────────────────────────
