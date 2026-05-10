@@ -3422,13 +3422,13 @@ async def auto_daily_recap(context):
                     await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
 
         recap = format_today_recap()
-        if recap:
-            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
-            if TELEGRAM_CHAT_ID_VIP:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=recap)
-            logger.info("✅ Récap journalier envoyé")
-        else:
-            logger.info("ℹ️ Aucun pick aujourd'hui — pas de récap")
+        if not recap:
+            recap = format_daily_report(days=1)
+
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
+        if TELEGRAM_CHAT_ID_VIP:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=recap)
+        logger.info("✅ Récap journalier envoyé")
     except Exception as e:
         logger.error(f"❌ auto_daily_recap: {e}")
 

@@ -300,14 +300,35 @@ def format_today_recap() -> str:
     Résumé de fin de journée : tous les picks envoyés aujourd'hui
     avec leur résultat (WIN / LOSS / en attente).
     Envoyé automatiquement à 23h00 heure Québec.
+    Retourne toujours un message — même s'il n'y a pas eu de picks.
     """
     history  = load_history()
     picks    = history["picks"]
     today    = datetime.now().strftime("%Y-%m-%d")
     today_ps = [p for p in picks if p.get("date") == today]
+    stats    = history["stats"]
+    s_wins   = stats.get("wins", 0)
+    s_loss   = stats.get("losses", 0)
+    s_tot    = s_wins + s_loss
+    s_wr     = s_wins / s_tot if s_tot > 0 else 0.0
+    streak   = _current_streak(picks)
+
+    date_fr  = datetime.now().strftime("%A %d %B %Y").upper()
 
     if not today_ps:
-        return ""
+        msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
+        msg += f"     {date_fr}\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg += "📭  Aucun pick envoyé aujourd'hui.\n"
+        msg += "     (Aucun match dans la fenêtre 1h avant début)\n\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"📈  Saison   :  {s_wins}W–{s_loss}L"
+        if s_tot > 0:
+            msg += f"  ({s_wr:.1%} WR)"
+        msg += f"  •  Série {streak}\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        return msg
 
     wins    = sum(1 for p in today_ps if p["result"] == "WIN")
     losses  = sum(1 for p in today_ps if p["result"] == "LOSS")
