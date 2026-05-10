@@ -84,6 +84,18 @@ except ImportError:
     PICK_MEMORY_AVAILABLE = False
     logger = logging.getLogger(__name__)
 
+# Brain — auto-analyse ROI et optimisation des seuils
+try:
+    from ultron_brain import (
+        run_analysis,
+        should_send_pick,
+        format_brain_report,
+        load_thresholds as brain_load_thresholds,
+    )
+    BRAIN_AVAILABLE = True
+except ImportError:
+    BRAIN_AVAILABLE = False
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3184,6 +3196,18 @@ async def auto_send_pronostics(context):
         return
 
     all_picks.sort(key=lambda x: x['confidence'], reverse=True)
+
+    # ── Filtrage Brain : retire les picks sous le seuil appris ───────────
+    if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
+        filtered = []
+        for p in all_picks:
+            sport_key = "NBA" if "🏀" in p["label"] else ("NHL" if "🏒" in p["label"] else "NFL")
+            if should_send_pick(sport_key, p["confidence"], p.get("pick_type", "ML")):
+                filtered.append(p)
+        if filtered:
+            all_picks = filtered
+            logger.info(f"🧠 Brain filter: {len(all_picks)} picks retenus sur {len(all_picks)+len(all_picks)-len(filtered)} totaux")
+
     heure_qc = quebec_time.strftime('%H:%M')
 
     # ── Canal FREE : 1 seul pick ML ───────────────────────────────────────
@@ -3451,6 +3475,52 @@ async def auto_daily_recap(context):
             pass
 
 
+async def auto_brain_analysis(context):
+    """
+    23h30 heure Québec (30 min après le récap) : auto-analyse ROI.
+    Met à jour les seuils appris et envoie un rapport hebdomadaire (lundi seulement).
+    Lance aussi run_analysis() silencieusement chaque soir pour garder les seuils à jour.
+    """
+    if not BRAIN_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        analysis = run_analysis()   # met toujours à jour les seuils
+        # Rapport complet uniquement le lundi
+        from datetime import datetime as _dt
+        try:
+            import pytz as _pytz
+            _tz = _pytz.timezone("America/Toronto")
+            _dow = _dt.now(_tz).weekday()   # 0 = lundi
+        except Exception:
+            _dow = _dt.now().weekday()
+
+        if _dow == 0:   # lundi → rapport hebdomadaire
+            report = format_brain_report(analysis)
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=report)
+            logger.info("✅ Rapport Brain hebdomadaire envoyé (lundi)")
+        else:
+            logger.info("🧠 Brain: analyse silencieuse — seuils mis à jour")
+    except Exception as e:
+        logger.error(f"❌ auto_brain_analysis: {e}")
+
+
+async def cmd_analyse(update, context):
+    """/analyse — rapport d'auto-analyse ROI immédiat"""
+    if not BRAIN_AVAILABLE:
+        await update.message.reply_text("⚠️ Module Brain non disponible.")
+        return
+    try:
+        await update.message.reply_text("🧠 Analyse en cours...")
+        analysis = run_analysis()
+        report   = format_brain_report(analysis)
+        await update.message.reply_text(report)
+    except Exception as e:
+        logger.error(f"❌ cmd_analyse: {e}")
+        await update.message.reply_text(f"❌ Erreur analyse: {e}")
+
+
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
@@ -3468,6 +3538,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("recap", cmd_recap))
+    app.add_handler(CommandHandler("analyse", cmd_analyse))
 
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
@@ -3505,6 +3576,15 @@ def main():
     _first_recap = max(10, (_target_qc - _now_qc).total_seconds())
     job_queue.run_repeating(auto_daily_recap, interval=86400, first=_first_recap)
     logger.info(f"📋 Récap journalier picks: 23h00 heure Québec (dans {int(_first_recap/3600)}h{int((_first_recap%3600)/60)}m)")
+
+    # Auto-analyse Brain: 23h30 heure Québec (30 min après le récap)
+    if BRAIN_AVAILABLE:
+        _target_brain = _now_qc.replace(hour=23, minute=30, second=0, microsecond=0)
+        if _target_brain <= _now_qc:
+            _target_brain += dt.timedelta(days=1)
+        _first_brain = max(10, (_target_brain - _now_qc).total_seconds())
+        job_queue.run_repeating(auto_brain_analysis, interval=86400, first=_first_brain)
+        logger.info(f"🧠 Auto-analyse Brain: 23h30 heure Québec (rapport lundi) (dans {int(_first_brain/3600)}h{int((_first_brain%3600)/60)}m)")
 
     logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
     logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
