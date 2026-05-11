@@ -3480,6 +3480,48 @@ async def auto_check_game_starts(context):
             logger.debug(f"⚠️ check_starts {sport_key}: {e}")
 
 
+async def auto_boxscore(context):
+    """
+    Toutes les 20 minutes: envoie les box scores des matchs en cours.
+    Envoyé uniquement si au moins un match est 'In Progress'.
+    """
+    if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    import asyncio
+    for sport in ("NBA", "NHL", "NFL"):
+        try:
+            games = get_live_game_ids(sport)
+            live = [g for g in games if 'progress' in g.get('status', '').lower()]
+            if not live:
+                continue
+            messages = format_all_boxscores(sport)
+            for msg in messages:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+                if TELEGRAM_CHAT_ID_VIP:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+                await asyncio.sleep(0.5)
+            logger.info(f"📊 Auto box scores {sport}: {len(live)} match(s) en cours")
+        except Exception as e:
+            logger.error(f"❌ auto_boxscore {sport}: {e}")
+
+
+async def auto_leaders_daily(context):
+    """
+    Chaque jour à midi heure Québec: envoie les leaders de stats pour NBA, NHL et NFL.
+    """
+    if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    for sport in ("NBA", "NHL", "NFL"):
+        try:
+            msg = format_leaders_message(sport)
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+            logger.info(f"🏆 Auto leaders {sport} envoyés")
+        except Exception as e:
+            logger.error(f"❌ auto_leaders_daily {sport}: {e}")
+
+
 def run_ultron_pipeline(bankroll=1000):
     """Lance le pipeline ULTRON (wrapper pour compatibilité avec main.py)"""
     logger.info(f"💰 Bankroll: ${bankroll}")
@@ -3657,6 +3699,16 @@ def main():
     # Alertes début de match: toutes les 5 minutes
     job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
     logger.info("🔔 Alertes matchs: toutes les 5 minutes")
+
+    # Box scores en direct: toutes les 20 minutes (seulement si match en cours)
+    if ESPN_CONTEXT_AVAILABLE:
+        job_queue.run_repeating(auto_boxscore, interval=1200, first=90)
+        logger.info("📊 Auto box scores: toutes les 20 min si match en cours")
+
+        # Leaders de stats: chaque jour à midi heure Québec (UTC 16:00)
+        import datetime as dt_l
+        job_queue.run_daily(auto_leaders_daily, time=dt_l.time(hour=16, minute=0, tzinfo=pytz.utc))
+        logger.info("🏆 Auto leaders: chaque jour à 12h00 heure Québec")
 
     # Message de motivation + résumé du jour: 9h00 heure Québec (UTC 13:00)
     import datetime as dt
