@@ -99,6 +99,17 @@ except ImportError:
     def get_model_adjustments(sport):   # noqa: E302 — fallback silencieux
         return {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0}
 
+# Ultron v2.0 — moteur Elo + No-Vig + ESPN + Qualité Filter
+try:
+    from ultron_v2_engine import (
+        UltronV2,
+        EloSystem as V2EloSystem,
+        format_daily_report as v2_format_daily_report,
+    )
+    V2_ENGINE_AVAILABLE = True
+except ImportError:
+    V2_ENGINE_AVAILABLE = False
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3376,6 +3387,24 @@ async def auto_check_results(context):
             if TELEGRAM_CHAT_ID_VIP:
                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
             logger.info(f"✅ Résultats notifiés: {len(updated)} picks gradés")
+
+        # Mise à jour Elo v2.0 après chaque résultat
+        if V2_ENGINE_AVAILABLE:
+            for pick in updated:
+                try:
+                    sport = pick.get("sport", "").upper()
+                    if sport not in ("NBA", "NHL", "NFL"):
+                        continue
+                    winner = pick.get("winner", "")
+                    loser  = pick.get("loser", "")
+                    margin = float(pick.get("margin", 1))
+                    home_won = pick.get("home_won", False)
+                    if winner and loser:
+                        elo = V2EloSystem(sport)
+                        elo.update(winner, loser, margin, home_won)
+                        logger.info(f"📊 Elo mis à jour [{sport}]: {winner}+ / {loser}-")
+                except Exception as _elo_err:
+                    logger.debug(f"⚠️ Elo update skip: {_elo_err}")
     except Exception as e:
         logger.error(f"❌ auto_check_results: {e}")
 
@@ -3592,6 +3621,29 @@ async def cmd_analyse(update, context):
         await update.message.reply_text(f"❌ Erreur analyse: {e}")
 
 
+async def cmd_picks_v2(update, context):
+    """/picks — picks du jour via moteur Ultron v2.0 (Elo + No-Vig + ESPN)"""
+    if not V2_ENGINE_AVAILABLE:
+        await update.message.reply_text("⚠️ Moteur v2.0 non disponible.")
+        return
+    await update.message.reply_text(
+        "🤖 *Ultron v2.0 analyse tous les matchs...*\n"
+        "_Elo + No-Vig + ESPN + Filtre qualité_",
+        parse_mode="Markdown"
+    )
+    try:
+        engine  = UltronV2(bankroll=1000)
+        result  = engine.run()
+        messages = v2_format_daily_report(result)
+        import asyncio
+        for msg in messages:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            await asyncio.sleep(1)
+    except Exception as e:
+        logger.error(f"❌ cmd_picks_v2: {e}")
+        await update.message.reply_text(f"❌ Erreur picks v2: {e}")
+
+
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
@@ -3610,6 +3662,7 @@ def main():
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("recap", cmd_recap))
     app.add_handler(CommandHandler("analyse", cmd_analyse))
+    app.add_handler(CommandHandler("picks", cmd_picks_v2))
 
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
