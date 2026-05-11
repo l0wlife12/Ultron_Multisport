@@ -3085,18 +3085,34 @@ async def auto_send_pronostics(context):
 
             for event in data.get('events', []):
                 try:
-                    status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                    status_type = event.get('status', {}).get('type', {})
+                    status_desc = status_type.get('description', '').lower()
+                    status_name = status_type.get('name', '').lower()
                     # Ignorer matchs terminés ou en cours
-                    if any(s in status_desc for s in ['final', 'completed', 'in progress']):
+                    if any(s in status_desc for s in ['final', 'completed', 'in progress', 'halftime']):
+                        continue
+                    if any(s in status_name for s in ['status_final', 'status_in_progress']):
                         continue
 
                     date_str = event.get('date', '')
-                    utc_dt = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ")
-                    utc_dt = utc_dt.replace(tzinfo=pytz.utc)
+                    # ── Parsing robuste : ESPN retourne parfois avec ou sans secondes
+                    # ex: "2026-05-10T23:00Z"  ou  "2026-05-10T23:00:00Z"
+                    utc_dt = None
+                    for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+                        try:
+                            utc_dt = datetime.datetime.strptime(date_str, fmt).replace(tzinfo=pytz.utc)
+                            break
+                        except ValueError:
+                            continue
+                    if utc_dt is None:
+                        logger.warning(f"⚠️ auto_send_pronostics: format date inconnu '{date_str}' ({sport_key})")
+                        continue
+
                     minutes_until = (utc_dt - now_utc).total_seconds() / 60
 
-                    # Match dans 30 à 90 minutes (fenêtre d'envoi)
-                    if 30 <= minutes_until <= 90:
+                    # Fenêtre d'envoi : 20 à 120 min avant le match
+                    # (élargie pour ne pas rater les playoffs NHL en soirée)
+                    if 20 <= minutes_until <= 120:
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
@@ -3106,7 +3122,20 @@ async def auto_send_pronostics(context):
                             if notify_key not in _notified_pronostics:
                                 _notified_pronostics.add(notify_key)
                                 upcoming_matches.append((sport_key, emoji, away, home, utc_dt))
-                except Exception:
+                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min")
+                            else:
+                                logger.debug(f"⏭️ Déjà notifié [{sport_key}]: {away} @ {home}")
+                    else:
+                        # Log pour diagnostiquer les matchs hors fenêtre
+                        try:
+                            comp = event.get('competitions', [{}])[0]
+                            t1 = comp.get('competitors', [{}])[0].get('team', {}).get('displayName', '?')
+                            t2 = comp.get('competitors', [{}])[1].get('team', {}).get('displayName', '?') if len(comp.get('competitors', [])) > 1 else '?'
+                            logger.debug(f"⏳ Hors fenêtre [{sport_key}]: {t1}@{t2} dans {minutes_until:.0f} min (statut: {status_desc})")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"⚠️ auto_send_pronostics event error [{sport_key}]: {e}")
                     continue
         except Exception as e:
             logger.debug(f"⚠️ auto_send_pronostics {sport_key}: {e}")
@@ -3216,7 +3245,8 @@ async def auto_send_pronostics(context):
                     "confidence": base_ml_conf,
                     "ev": pred.get('ev_pct', ''),
                 })
-        except Exception:
+        except Exception as _pred_err:
+            logger.warning(f"⚠️ Erreur prédiction [{sport_key}] {away} @ {home}: {_pred_err}")
             continue
 
     if not all_picks:
@@ -3231,9 +3261,11 @@ async def auto_send_pronostics(context):
             sport_key = "NBA" if "🏀" in p["label"] else ("NHL" if "🏒" in p["label"] else "NFL")
             if should_send_pick(sport_key, p["confidence"], p.get("pick_type", "ML")):
                 filtered.append(p)
+            else:
+                logger.info(f"🧠 Brain filter: BLOQUÉ {p['label']} conf={p['confidence']}% (sous seuil {sport_key})")
         if filtered:
             all_picks = filtered
-            logger.info(f"🧠 Brain filter: {len(all_picks)} picks retenus sur {len(all_picks)+len(all_picks)-len(filtered)} totaux")
+            logger.info(f"🧠 Brain filter: {len(all_picks)} pick(s) retenus")
 
     heure_qc = quebec_time.strftime('%H:%M')
 
