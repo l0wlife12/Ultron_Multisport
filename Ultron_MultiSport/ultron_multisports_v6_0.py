@@ -65,6 +65,7 @@ try:
         format_all_boxscores,
         format_leaders_message,
         get_live_player_props,
+        get_team_stats,
     )
     ESPN_CONTEXT_AVAILABLE = True
 except ImportError:
@@ -466,6 +467,78 @@ def get_live_nba_games_api():
 
 # Charger les stats NBA réelles au démarrage (optionnel - peut être lent)
 NBA_TEAM_STATS_REAL = NBA_TEAM_STATS
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STATS D'ÉQUIPE DYNAMIQUES (ESPN standings) - cache hebdomadaire
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TEAM_STATS_CACHE: dict = {}          # {sport: merged_dict}
+_TEAM_STATS_CACHE_TIME: dict = {}     # {sport: datetime}
+_TEAM_STATS_TTL_SECONDS = 7 * 24 * 3600  # 7 jours
+
+# Clé offensive, clé défensive, seuil de détection "valeur totale" par sport
+_TEAM_STAT_KEYS = {
+    'NBA': ('ppg', 'pa', 200),
+    'NHL': ('gf',  'ga',  10),
+    'NFL': ('pf',  'pa',  40),
+}
+
+
+def get_dynamic_team_stats(sport: str) -> dict:
+    """
+    Retourne les stats d'équipes ESPN à jour (standings hebdomadaires).
+    Cache de 7 jours — fallback automatique sur les dicts statiques.
+    La clé de sortie est le short key (ex: 'celtics'), identique aux dicts statiques.
+    """
+    global _TEAM_STATS_CACHE, _TEAM_STATS_CACHE_TIME
+    now = datetime.datetime.now()
+    cached_time = _TEAM_STATS_CACHE_TIME.get(sport)
+    if cached_time and (now - cached_time).total_seconds() < _TEAM_STATS_TTL_SECONDS:
+        return _TEAM_STATS_CACHE[sport]
+
+    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'NFL': NFL_TEAM_STATS}.get(sport, {})
+    if not ESPN_CONTEXT_AVAILABLE:
+        return base
+
+    try:
+        espn_data = get_team_stats(sport)
+        if not espn_data:
+            return base
+
+        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'NFL': find_team_nfl}.get(sport)
+        off_key, def_key, threshold = _TEAM_STAT_KEYS.get(sport, ('ppg', 'pa', 200))
+
+        live = {}
+        for display_name, stats in espn_data.items():
+            short_key = find_fn(display_name) if find_fn else None
+            if not short_key:
+                continue
+            wins    = int(stats.get('wins', 0) or 0)
+            losses  = int(stats.get('losses', 0) or 0)
+            gp      = max(1, wins + losses)
+            raw_for = float(stats.get('points_for', 0) or 0)
+            raw_aga = float(stats.get('points_against', 0) or 0)
+            off_val = round(raw_for / gp if raw_for > threshold else raw_for, 2)
+            def_val = round(raw_aga / gp if raw_aga > threshold else raw_aga, 2)
+            live[short_key] = {
+                'strength': int((stats.get('win_pct', 0.5) or 0.5) * 100),
+                off_key:    off_val,
+                def_key:    def_val,
+                'wins':     wins,
+                'losses':   losses,
+                'gp':       gp,
+            }
+
+        merged = {**base, **live}
+        _TEAM_STATS_CACHE[sport]      = merged
+        _TEAM_STATS_CACHE_TIME[sport] = now
+        logger.info(f"✅ Stats ESPN {sport}: {len(live)} équipes mises à jour")
+        return merged
+
+    except Exception as e:
+        logger.warning(f"⚠️ get_dynamic_team_stats {sport}: {e}")
+        return base
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NBA PLAYER PROPS - STARS OVER/UNDER LINES
@@ -931,8 +1004,9 @@ def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
     ]
     
     # Cotes par défaut basées sur la force relative  
-    away_stats = NHL_TEAM_STATS.get(away_clean, {"strength": 75})
-    home_stats = NHL_TEAM_STATS.get(home_clean, {"strength": 75})
+    _nhl_ts = get_dynamic_team_stats('NHL')
+    away_stats = _nhl_ts.get(away_clean, {"strength": 75})
+    home_stats = _nhl_ts.get(home_clean, {"strength": 75})
     
     strength_diff = away_stats["strength"] - home_stats["strength"]
     if strength_diff > 5:
@@ -1015,8 +1089,9 @@ def get_best_odds_nba(away_team: str, home_team: str) -> dict:
     ]
     
     # Cotes par défaut basées sur la force relative  
-    away_stats = NBA_TEAM_STATS.get(away_clean, {"strength": 85})
-    home_stats = NBA_TEAM_STATS.get(home_clean, {"strength": 85})
+    _nba_ts = get_dynamic_team_stats('NBA')
+    away_stats = _nba_ts.get(away_clean, {"strength": 85})
+    home_stats = _nba_ts.get(home_clean, {"strength": 85})
     
     strength_diff = away_stats["strength"] - home_stats["strength"]
     if strength_diff > 5:
@@ -1203,8 +1278,9 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     away_clean = find_team_nhl(away_team) or away_team.lower()
     home_clean = find_team_nhl(home_team) or home_team.lower()
     
-    away_stats = NHL_TEAM_STATS.get(away_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
-    home_stats = NHL_TEAM_STATS.get(home_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
+    _nhl_ts = get_dynamic_team_stats('NHL')
+    away_stats = _nhl_ts.get(away_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
+    home_stats = _nhl_ts.get(home_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
     
     odds_data = get_best_odds_nhl(away_clean, home_clean)
     best_away_ml = odds_data["away_ml"]
@@ -1323,8 +1399,9 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     away_clean = find_team_nfl(away_team) or away_team.lower()
     home_clean = find_team_nfl(home_team) or home_team.lower()
     
-    away_stats = NFL_TEAM_STATS.get(away_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
-    home_stats = NFL_TEAM_STATS.get(home_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
+    _nfl_ts = get_dynamic_team_stats('NFL')
+    away_stats = _nfl_ts.get(away_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
+    home_stats = _nfl_ts.get(home_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
     
     odds_data = get_best_odds_nfl(away_clean, home_clean)
     best_away_ml = odds_data["away_ml"]
@@ -1476,8 +1553,9 @@ def build_nba_features(away_team, home_team):
     away_clean = find_team_nba(away_team) or away_team.lower()
     home_clean = find_team_nba(home_team) or home_team.lower()
     
-    away_stats = NBA_TEAM_STATS.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
-    home_stats = NBA_TEAM_STATS.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
+    _nba_ts = get_dynamic_team_stats('NBA')
+    away_stats = _nba_ts.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
+    home_stats = _nba_ts.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
     
     try:
         # Features principales
@@ -2113,8 +2191,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     
     # Fallback sur le modèle statistique 4-facteurs
     if prob_home_win is None:
-        away_stats = NBA_TEAM_STATS.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
-        home_stats = NBA_TEAM_STATS.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
+        _nba_ts = get_dynamic_team_stats('NBA')
+        away_stats = _nba_ts.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
+        home_stats = _nba_ts.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
         
         # Calcul du modèle 4-facteurs pour le basketball
         away_ppg_diff = away_stats["ppg"] - home_stats["pa"]
