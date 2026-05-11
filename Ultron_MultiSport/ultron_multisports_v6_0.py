@@ -2986,6 +2986,32 @@ async def auto_daily_motivation(context):
             logger.error(f"❌ Erreur alertes blessures: {e}")
 
 
+def _player_props_msg_for_match(away: str, home: str) -> str:
+    """
+    Analyse et formate les props joueurs NBA pour un match.
+    Retourne une chaîne vide si aucune value n'est identifiée.
+    (Limité à NBA car NBA_PLAYER_PROPS ne couvre que le basket.)
+    """
+    try:
+        results = analyze_all_player_props(home, away)
+        away_summary = format_team_props_summary(away, results['away_team'])
+        home_summary = format_team_props_summary(home, results['home_team'])
+        has_away = 'value(s) trouvée(s)' in away_summary
+        has_home = 'value(s) trouvée(s)' in home_summary
+        if not has_away and not has_home:
+            return ""
+        msg  = "🌟  P R O P S  J O U E U R S\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if has_away:
+            msg += away_summary + "\n"
+        if has_home:
+            msg += home_summary
+        return msg.strip()
+    except Exception as e:
+        logger.debug(f"⚠️ _player_props_msg_for_match: {e}")
+        return ""
+
+
 async def auto_send_pronostics(context):
     """
     Toutes les 30 minutes: vérifie s'il y a des matchs qui commencent
@@ -3288,6 +3314,29 @@ async def auto_send_pronostics(context):
                 game_date=today_date,
             )
         logger.info(f"💾 {len(all_picks)} picks mémorisés pour auto-notation")
+
+    # ── Player Props NBA : joueurs des équipes concernées ────────────────
+    import asyncio as _asyncio
+    for p in all_picks:
+        if "🏀" not in p["label"]:
+            continue  # NBA uniquement
+        label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
+        parts = label_clean.split(" @ ")
+        if len(parts) != 2:
+            continue
+        away_t, home_t = parts[0].strip(), parts[1].strip()
+        props_msg = _player_props_msg_for_match(away_t, home_t)
+        if not props_msg:
+            continue
+        full_props = f"🏀 {away_t} @ {home_t}\n" + props_msg
+        try:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=full_props)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=full_props)
+            logger.info(f"🌟 Props joueurs envoyés: {away_t} @ {home_t}")
+        except Exception as _pe:
+            logger.error(f"❌ Props joueurs envoi: {_pe}")
+        await _asyncio.sleep(0.5)
 
 
 async def auto_check_results(context):
@@ -3638,6 +3687,24 @@ async def cmd_picks(update, context):
             await update.message.reply_text(msg, parse_mode="Markdown")
             await asyncio.sleep(1)
         logger.info(f"✅ /picks envoyé: {len(result.get('picks', []))} picks")
+
+        # ── Props joueurs NBA pour chaque match retenu ────────────────
+        nba_matches_seen: set = set()
+        for pick in result.get('picks', []):
+            if pick.get('sport', '').upper() != 'NBA':
+                continue
+            away_t = pick.get('away_team', '')
+            home_t = pick.get('home_team', '')
+            key = f"{away_t}@{home_t}"
+            if key in nba_matches_seen or not away_t or not home_t:
+                continue
+            nba_matches_seen.add(key)
+            props_msg = _player_props_msg_for_match(away_t, home_t)
+            if props_msg:
+                await update.message.reply_text(
+                    f"🏀 {away_t} @ {home_t}\n" + props_msg
+                )
+                await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"❌ cmd_picks: {e}")
         await update.message.reply_text(f"❌ Erreur picks v2: {e}")
