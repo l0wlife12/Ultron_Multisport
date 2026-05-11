@@ -527,6 +527,143 @@ class OddsFetcher:
 
 
 # ══════════════════════════════════════════
+# MODULE 4b — HISTORIQUE DES PERFORMANCES
+# ══════════════════════════════════════════
+
+class TeamHistoryEngine:
+    """
+    Analyse les performances historiques réelles de chaque équipe
+    basée sur les picks passés d'Ultron (picks_history.json).
+    Données : win rate global, home/away, forme récente, h2h.
+    N'influence qu'avec un minimum de données — sinon neutre.
+    """
+
+    MIN_GAMES = 3   # minimum pour être statistiquement pertinent
+    MAX_ADJ   = 0.10  # plafond ±10% d'impact sur la probabilité
+
+    def __init__(self):
+        self._picks_cache = None
+        self._cache_time  = 0
+
+    def _load_picks(self) -> list:
+        """Charge l'historique gradé depuis picks_history.json"""
+        if self._picks_cache is not None and time.time() - self._cache_time < 300:
+            return self._picks_cache
+        candidates = [
+            "/data/picks_history.json",
+            os.path.join(DATA_DIR, "picks_history.json"),
+            "picks_history.json",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    graded = [p for p in data.get('picks', [])
+                              if p.get('result') in ('WIN', 'LOSS')]
+                    self._picks_cache = graded
+                    self._cache_time  = time.time()
+                    return graded
+                except Exception:
+                    pass
+        return []
+
+    @staticmethod
+    def _fuzzy(name_a: str, name_b: str) -> bool:
+        """Correspondance souple entre deux noms d'équipe"""
+        words = [w for w in name_a.lower().split() if len(w) > 3]
+        b_low = name_b.lower()
+        return any(w in b_low for w in words)
+
+    def get_team_profile(self, team: str, sport: str,
+                          is_home: bool) -> dict:
+        """
+        Profil historique d'une équipe :
+        win rate global, home/away, forme 5 derniers matchs.
+        Retourne adj = delta à ajouter sur la probabilité home.
+        """
+        picks = self._load_picks()
+        sport_picks = [p for p in picks
+                       if p.get('sport', '').upper() == sport.upper()]
+
+        # Picks où cette équipe était sélectionnée par Ultron
+        team_picks = []
+        for p in sport_picks:
+            team_home = self._fuzzy(team, p.get('home_team', ''))
+            team_away = self._fuzzy(team, p.get('away_team', ''))
+            was_pick  = self._fuzzy(team, p.get('pick_team', ''))
+            if was_pick and (team_home or team_away):
+                team_picks.append({
+                    'result':   p['result'],
+                    'date':     p.get('date', ''),
+                    'was_home': team_home,
+                })
+
+        if not team_picks:
+            return {'n': 0, 'adj': 0.0, 'reliable': False, 'form': ''}
+
+        total     = len(team_picks)
+        global_wr = sum(1 for p in team_picks if p['result'] == 'WIN') / total
+
+        # Win rate home/away spécifique si assez de données
+        context_picks = [p for p in team_picks
+                         if p['was_home'] == is_home]
+        if len(context_picks) >= self.MIN_GAMES:
+            ctx_wr     = sum(1 for p in context_picks
+                             if p['result'] == 'WIN') / len(context_picks)
+            n_relevant = len(context_picks)
+        else:
+            ctx_wr     = global_wr
+            n_relevant = total
+
+        # Forme récente : 5 derniers
+        recent    = sorted(team_picks,
+                           key=lambda x: x['date'], reverse=True)[:5]
+        recent_wr = sum(1 for p in recent if p['result'] == 'WIN') / len(recent)
+        form_str  = ''.join(
+            '✅' if p['result'] == 'WIN' else '❌' for p in recent
+        )
+
+        # Ajustement combiné (60% pertinent + 40% récent) vs baseline 50%
+        combined = ctx_wr * 0.60 + recent_wr * 0.40
+        adj = round(max(min((combined - 0.50) * 0.20,
+                             self.MAX_ADJ), -self.MAX_ADJ), 4)
+
+        return {
+            'n':          n_relevant,
+            'global_wr':  round(global_wr, 3),
+            'ctx_wr':     round(ctx_wr, 3),
+            'recent_wr':  round(recent_wr, 3),
+            'adj':        adj if n_relevant >= self.MIN_GAMES else 0.0,
+            'reliable':   n_relevant >= self.MIN_GAMES,
+            'form':       form_str,
+        }
+
+    def get_head_to_head(self, home: str, away: str,
+                          sport: str) -> dict:
+        """Win rate d'Ultron sur les affrontements directs home vs away"""
+        picks = self._load_picks()
+        h2h   = []
+        for p in picks:
+            if p.get('sport', '').upper() != sport.upper():
+                continue
+            is_this_game = (
+                self._fuzzy(home, p.get('home_team', '')) and
+                self._fuzzy(away, p.get('away_team', ''))
+            )
+            if is_this_game:
+                h2h.append(p['result'])
+
+        if len(h2h) < 2:
+            return {'n': len(h2h), 'wr': 0.5, 'adj': 0.0}
+
+        wr  = sum(1 for r in h2h if r == 'WIN') / len(h2h)
+        # Impact h2h plafonné ±6%
+        adj = round(max(min((wr - 0.50) * 0.12, 0.06), -0.06), 4)
+        return {'n': len(h2h), 'wr': round(wr, 3), 'adj': adj}
+
+
+# ══════════════════════════════════════════
 # MODULE 5 — FILTRE DE QUALITÉ
 # ══════════════════════════════════════════
 
@@ -700,13 +837,16 @@ class UltronV2:
         # 3. Système Elo
         elo = EloSystem(sport)
 
-        # 4. Filtre qualité
+        # 4. Historique des performances
+        hist = TeamHistoryEngine()
+
+        # 5. Filtre qualité
         qf = QualityFilter(sport)
 
         for game in games:
             try:
                 pick = self._analyze_game(
-                    game, sport, espn, inj, stats, elo, qf
+                    game, sport, espn, inj, stats, elo, hist, qf
                 )
                 if pick:
                     picks.append(pick)
@@ -719,6 +859,7 @@ class UltronV2:
                       espn: ESPNDataFetcher,
                       injuries: dict, team_stats: dict,
                       elo: EloSystem,
+                      hist: TeamHistoryEngine,
                       qf: QualityFilter) -> Optional[dict]:
         """Analyse complète d'un match"""
 
@@ -753,11 +894,21 @@ class UltronV2:
             home_inj, away_inj, home_stats, away_stats
         )
 
+        # ── Historique des performances ──
+        home_hist = hist.get_team_profile(home, sport, is_home=True)
+        away_hist = hist.get_team_profile(away, sport, is_home=False)
+        h2h_hist  = hist.get_head_to_head(home, away, sport)
+        # Ajustement net : home gagne → +delta, away gagne → -delta
+        hist_adj  = round(
+            home_hist['adj'] - away_hist['adj'] + h2h_hist['adj'], 4
+        )
+
         # ── Probabilité finale fusionnée ──
-        # 45% consensus books + 35% Elo + 20% ESPN adjustment
-        base_prob = (consensus['home'] * 0.45 +
-                     elo_home         * 0.35 +
-                     (consensus['home'] + espn_adj) * 0.20)
+        # 38% consensus books + 30% Elo + 17% ESPN + 15% historique
+        base_prob = (consensus['home']              * 0.38 +
+                     elo_home                       * 0.30 +
+                     (consensus['home'] + espn_adj) * 0.17 +
+                     (consensus['home'] + hist_adj) * 0.15)
         base_prob = round(min(max(base_prob, 0.25), 0.85), 4)
         away_prob = round(1 - base_prob, 4)
 
@@ -799,7 +950,8 @@ class UltronV2:
         confidence = self._confidence_score(
             pick_prob, pick_ev, consensus,
             elo_home, base_prob,
-            home_inj, away_inj
+            home_inj, away_inj,
+            home_hist, away_hist, h2h_hist
         )
 
         # ── Gardien NHL ──
@@ -852,12 +1004,20 @@ class UltronV2:
             'ou_data':       ou_data,
             'all_odds':      h2h_odds,
             'data_freshness_mins': 0,
+            # ── Historique ──
+            'hist_adj':      hist_adj,
+            'home_hist':     home_hist,
+            'away_hist':     away_hist,
+            'h2h_hist':      h2h_hist,
         }
 
     def _confidence_score(self, prob: float, ev: float,
                            consensus: dict,
                            elo_home: float, base_prob: float,
-                           home_inj: dict, away_inj: dict) -> int:
+                           home_inj: dict, away_inj: dict,
+                           home_hist: dict = None,
+                           away_hist: dict = None,
+                           h2h_hist: dict = None) -> int:
         score = 0
 
         # Probabilité forte (0-25 pts)
@@ -879,6 +1039,15 @@ class UltronV2:
 
         # Elo proche du consensus (0-10 pts)
         if abs(elo_home - base_prob) < 0.05: score += 10
+
+        # Historique confirme (0-15 pts)
+        if home_hist and home_hist.get('reliable'):
+            if home_hist['ctx_wr'] >= 0.62: score += 15
+            elif home_hist['ctx_wr'] >= 0.55: score += 8
+            elif home_hist['ctx_wr'] < 0.40: score -= 8
+        if h2h_hist and h2h_hist.get('n', 0) >= 2:
+            if h2h_hist['wr'] >= 0.65: score += 10
+            elif h2h_hist['wr'] <= 0.35: score -= 8
 
         # Pénalité blessures
         if home_inj.get('severity') == 'CRITIQUE': score -= 15
@@ -957,6 +1126,31 @@ def format_pick_message(pick: dict) -> str:
     elo_str = ("✅ Elo confirme" if pick.get('elo_confirms')
                else "⚠️ Elo diverge")
 
+    # Historique
+    hist_str = ""
+    home_h = pick.get('home_hist', {})
+    away_h = pick.get('away_hist', {})
+    h2h_h  = pick.get('h2h_hist', {})
+    hist_parts = []
+    if home_h.get('reliable'):
+        hist_parts.append(
+            f"{pick['home_team'].split()[-1]} "
+            f"`{home_h['ctx_wr']:.0%}` dom {home_h.get('form','')}"
+        )
+    if away_h.get('reliable'):
+        hist_parts.append(
+            f"{pick['away_team'].split()[-1]} "
+            f"`{away_h['ctx_wr']:.0%}` ext {away_h.get('form','')}"
+        )
+    if h2h_h.get('n', 0) >= 2:
+        hist_parts.append(
+            f"H2H `{h2h_h['wr']:.0%}` ({h2h_h['n']} matchs)"
+        )
+    if hist_parts:
+        hist_str = "\n📚 *Historique :*\n" + "\n".join(
+            f"   • {p}" for p in hist_parts
+        )
+
     # Blessures
     inj_str = ""
     key_inj = pick.get('key_injuries', [])
@@ -1021,7 +1215,9 @@ def format_pick_message(pick: dict) -> str:
         f"`{pick['consensus_prob']:.0%}`\n"
         f"   • Elo Ultron : `{pick['elo_prob']:.0%}`\n"
         f"   • Ajust ESPN : `{pick['espn_adj']:+.1%}`\n"
+        f"   • Histor adj : `{pick.get('hist_adj', 0):+.1%}`\n"
         f"   • {elo_str}\n"
+        f"{hist_str}"
         f"{inj_str}"
         f"{goalie_str}"
         f"{ou_str}\n"
@@ -1059,7 +1255,7 @@ def format_daily_report(result: dict) -> list:
         f"   sur {result.get('total_raw', 0)} analysés\n"
         f"💰 *Bankroll :* ${result.get('bankroll', 0):,.0f}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"_Modèle : Elo + No-Vig + ESPN + Régression_"
+        f"_Modèle : Elo + No-Vig + ESPN + Historique + Régression_"
     )
     messages.append(header)
 
