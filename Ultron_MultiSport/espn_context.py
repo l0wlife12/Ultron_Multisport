@@ -350,3 +350,282 @@ def find_game_context(away: str, home: str, games: List[dict]) -> dict:
             return game
 
     return {}
+
+
+# ─────────────────────────────────────────
+# BOX SCORE EN DIRECT
+# ─────────────────────────────────────────
+
+def get_live_game_ids(sport: str) -> list:
+    """
+    Retourne la liste des matchs du jour avec leur ID ESPN.
+    Inclut les matchs en cours, à venir et terminés aujourd'hui.
+    """
+    path = SPORT_PATHS.get(sport)
+    if not path:
+        return []
+    try:
+        today = date.today().strftime("%Y%m%d")
+        url = f"{ESPN_BASE}/{path}/scoreboard?dates={today}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        games = []
+        for event in resp.json().get('events', []):
+            comp = event.get('competitions', [{}])[0]
+            competitors = comp.get('competitors', [])
+            if len(competitors) < 2:
+                continue
+            away = next((t for t in competitors if t.get('homeAway') == 'away'), competitors[0])
+            home = next((t for t in competitors if t.get('homeAway') == 'home'), competitors[1])
+            status = event.get('status', {})
+            games.append({
+                'id':     event['id'],
+                'away':   away['team']['displayName'],
+                'home':   home['team']['displayName'],
+                'status': status.get('type', {}).get('description', ''),
+                'clock':  status.get('displayClock', ''),
+                'period': status.get('period', 0),
+            })
+        return games
+    except Exception as e:
+        print(f"Erreur get_live_game_ids {sport}: {e}")
+        return []
+
+
+def get_boxscore(sport: str, game_id: str) -> dict:
+    """
+    Récupère le box score complet d'un match via l'endpoint summary ESPN.
+    Retourne {} si indisponible.
+    """
+    path = SPORT_PATHS.get(sport)
+    if not path:
+        return {}
+    try:
+        url = f"{ESPN_BASE}/{path}/summary?event={game_id}"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return {}
+        data = resp.json()
+        boxscore = data.get('boxscore', {})
+        header   = data.get('header', {})
+
+        result = {
+            'sport':      sport,
+            'game_id':    game_id,
+            'home':       '',
+            'away':       '',
+            'home_score': 0,
+            'away_score': 0,
+            'status':     '',
+            'clock':      '',
+            'period':     0,
+            'teams':      [],
+        }
+
+        # Score + statut depuis le header
+        competitions = header.get('competitions', [{}])[0] if header else {}
+        for comp in competitions.get('competitors', []):
+            side  = comp.get('homeAway', '')
+            name  = comp.get('team', {}).get('displayName', '')
+            score = int(comp.get('score', 0) or 0)
+            if side == 'home':
+                result['home']       = name
+                result['home_score'] = score
+            else:
+                result['away']       = name
+                result['away_score'] = score
+        status_data = competitions.get('status', {})
+        result['status'] = status_data.get('type', {}).get('description', '')
+        result['clock']  = status_data.get('displayClock', '')
+        result['period'] = status_data.get('period', 0)
+
+        # Stats joueurs
+        for team_data in boxscore.get('players', []):
+            team_name = team_data.get('team', {}).get('displayName', '')
+            players   = []
+            for stat_group in team_data.get('statistics', []):
+                keys = stat_group.get('names', stat_group.get('keys', []))
+                for athlete_data in stat_group.get('athletes', []):
+                    if athlete_data.get('didNotPlay', False):
+                        continue
+                    athlete    = athlete_data.get('athlete', {})
+                    stats_vals = athlete_data.get('stats', [])
+                    player_stats = {
+                        keys[i]: stats_vals[i]
+                        for i in range(min(len(keys), len(stats_vals)))
+                    }
+                    players.append({
+                        'name':     athlete.get('displayName', ''),
+                        'position': athlete.get('position', {}).get('abbreviation', ''),
+                        'stats':    player_stats,
+                    })
+            result['teams'].append({'name': team_name, 'players': players})
+
+        return result
+    except Exception as e:
+        print(f"Erreur get_boxscore {sport}/{game_id}: {e}")
+        return {}
+
+
+def _period_label(sport: str, period: int) -> str:
+    """Retourne le libellé de la période (Q1, OT, 1re, etc.)."""
+    if sport == 'NBA':
+        return f"Q{period}" if period <= 4 else f"OT{period - 4}"
+    elif sport == 'NHL':
+        return {1: '1re', 2: '2e', 3: '3e'}.get(period, f"OT{period - 3}")
+    elif sport == 'NFL':
+        return f"Q{period}" if period <= 4 else "OT"
+    return f"P{period}"
+
+
+def _get_display_keys(sport: str) -> list:
+    """Colonnes prioritaires à afficher dans le box score."""
+    if sport == 'NBA':
+        return ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', '+/-']
+    elif sport == 'NHL':
+        return ['G', 'A', 'PTS', '+/-', 'SOG', 'TOI']
+    elif sport == 'NFL':
+        return ['CMP', 'YDS', 'TD', 'INT']
+    return ['PTS']
+
+
+def format_boxscore_message(sport: str, game_id: str) -> str:
+    """Formate le box score d'un match pour Telegram."""
+    data = get_boxscore(sport, game_id)
+    if not data:
+        return "❌ Box score indisponible pour ce match."
+
+    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(sport, "🎯")
+    away   = data['away'] or '?'
+    home   = data['home'] or '?'
+    status = data.get('status', '')
+    clock  = data.get('clock', '')
+    period = data.get('period', 0)
+
+    msg  = f"{sport_emoji} BOX SCORE — {sport}\n"
+    msg += f"🏟  {away}  {data['away_score']} – {data['home_score']}  {home}\n"
+    if 'progress' in status.lower() and period:
+        msg += f"⏱  {_period_label(sport, period)}  |  {clock}\n"
+    elif 'final' in status.lower():
+        msg += "🏁  FINAL\n"
+    elif status:
+        msg += f"📅  {status}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    keys = _get_display_keys(sport)
+    for team_data in data.get('teams', []):
+        players = team_data.get('players', [])
+        if not players:
+            continue
+        msg += f"\n🔷 {team_data['name']}\n"
+        # En-tête colonnes
+        header = f"{'Joueur':<16}" + "".join(f" {k:>5}" for k in keys)
+        msg += header + "\n"
+        msg += "─" * len(header) + "\n"
+        for p in players[:8]:
+            nom   = p['name'].split()[-1][:14]
+            ligne = f"{nom:<16}" + "".join(
+                f" {str(p['stats'].get(k, '-'))[:5]:>5}" for k in keys
+            )
+            msg += ligne + "\n"
+
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "📡 Source : ESPN"
+    return msg
+
+
+def format_all_boxscores(sport: str) -> List[str]:
+    """
+    Retourne une liste de messages (un par match du jour).
+    À envoyer séquentiellement dans Telegram.
+    """
+    games = get_live_game_ids(sport)
+    if not games:
+        sport_emoji = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(sport, "🎯")
+        return [f"{sport_emoji} Aucun match {sport} aujourd'hui."]
+    messages = []
+    for g in games:
+        msg = format_boxscore_message(sport, g['id'])
+        messages.append(msg)
+    return messages
+
+
+# ─────────────────────────────────────────
+# LEADERS DE STATS
+# ─────────────────────────────────────────
+
+_LEADER_CATEGORIES = {
+    'NBA': ['pointsPerGame', 'reboundsPerGame', 'assistsPerGame',
+            'stealsPerGame', 'blocksPerGame'],
+    'NHL': ['points', 'goals', 'assists', 'plusMinus', 'savePercentage'],
+    'NFL': ['passingYards', 'rushingYards', 'receivingYards',
+            'passingTouchdowns', 'sacks'],
+}
+
+
+def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
+    """
+    Récupère les leaders de statistiques depuis ESPN.
+    Retourne liste de dicts :
+      { 'name': str, 'abbreviation': str, 'leaders': [{name, team, value}] }
+    """
+    path = SPORT_PATHS.get(sport)
+    if not path:
+        return []
+    try:
+        url  = f"{ESPN_BASE}/{path}/leaders"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return []
+        data          = resp.json()
+        target_cats   = _LEADER_CATEGORIES.get(sport, [])
+        categories    = []
+
+        for cat in data.get('categories', []):
+            if cat.get('name', '') not in target_cats:
+                continue
+            leaders = []
+            for entry in cat.get('leaders', [])[:max_per_cat]:
+                athlete = entry.get('athlete', {})
+                team    = (
+                    athlete.get('team', {}).get('shortDisplayName', '') or
+                    athlete.get('team', {}).get('displayName', '')
+                )
+                leaders.append({
+                    'name':  athlete.get('displayName', athlete.get('shortName', '?')),
+                    'team':  team,
+                    'value': entry.get('displayValue', '?'),
+                })
+            if leaders:
+                categories.append({
+                    'name':         cat.get('displayName', cat.get('name', '')),
+                    'abbreviation': cat.get('abbreviation', cat.get('name', '')[:3].upper()),
+                    'leaders':      leaders,
+                })
+        return categories
+    except Exception as e:
+        print(f"Erreur get_stat_leaders {sport}: {e}")
+        return []
+
+
+def format_leaders_message(sport: str) -> str:
+    """Formate les leaders stats d'un sport pour Telegram."""
+    categories = get_stat_leaders(sport)
+    if not categories:
+        return f"❌ Leaders stats {sport} indisponibles (hors saison?)."
+
+    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(sport, "🎯")
+    ranks       = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+
+    msg  = f"{sport_emoji} LEADERS {sport} — SAISON EN COURS\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    for cat in categories:
+        msg += f"\n📊 {cat['name']}\n"
+        for i, leader in enumerate(cat['leaders']):
+            rank = ranks[i] if i < len(ranks) else f"{i + 1}."
+            team = f"({leader['team']})" if leader['team'] else ""
+            msg += f"  {rank} {leader['name']} {team} — {leader['value']}\n"
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "📡 Source : ESPN"
+    return msg

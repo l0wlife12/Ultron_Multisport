@@ -62,6 +62,8 @@ try:
         format_injuries_alert,
         get_games_with_context,
         find_game_context,
+        format_all_boxscores,
+        format_leaders_message,
     )
     ESPN_CONTEXT_AVAILABLE = True
 except ImportError:
@@ -2546,6 +2548,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/props_match [équipe1] vs [équipe2] - Props du match\n"
     msg += "/player [nom] - Props d'un joueur star 🌟\n"
     msg += "/all_props - Tous les joueurs stars disponibles\n\n"
+    msg += "COMMANDES ESPN EN DIRECT:\n"
+    msg += "/boxscore nba — Box scores en direct 📊\n"
+    msg += "/boxscore nhl — Box scores NHL 🏒\n"
+    msg += "/boxscore nfl — Box scores NFL 🏈\n"
+    msg += "/leaders nba — Leaders stats saison NBA 🏆\n"
+    msg += "/leaders nhl — Leaders stats saison NHL 🏒\n"
+    msg += "/leaders nfl — Leaders stats saison NFL 🏈\n\n"
     msg += "EXPLICATION DES PICKS:\n"
     msg += "✅ BUY - Valeur EV > +1%\n"
     msg += "👀 MONITORING - EV entre 0% et +1%\n"
@@ -3376,6 +3385,45 @@ async def cmd_recap(update, context):
         await update.message.reply_text(f"❌ Erreur: {e}")
 
 
+async def cmd_boxscore(update, context):
+    """/boxscore <nba|nhl|nfl> — box scores en direct des matchs du jour"""
+    if not ESPN_CONTEXT_AVAILABLE:
+        await update.message.reply_text("⚠️ Module ESPN non disponible.")
+        return
+    sport = (context.args[0].upper() if context.args else "NBA")
+    if sport not in ("NBA", "NHL", "NFL"):
+        await update.message.reply_text("❌ Usage: /boxscore <nba|nhl|nfl>")
+        return
+    try:
+        await update.message.reply_text(f"⏳ Récupération box scores {sport}...")
+        messages = format_all_boxscores(sport)
+        import asyncio
+        for msg in messages:
+            await update.message.reply_text(msg)
+            await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.error(f"❌ cmd_boxscore: {e}")
+        await update.message.reply_text(f"❌ Erreur boxscore: {e}")
+
+
+async def cmd_leaders(update, context):
+    """/leaders <nba|nhl|nfl> — leaders de statistiques de la saison"""
+    if not ESPN_CONTEXT_AVAILABLE:
+        await update.message.reply_text("⚠️ Module ESPN non disponible.")
+        return
+    sport = (context.args[0].upper() if context.args else "NBA")
+    if sport not in ("NBA", "NHL", "NFL"):
+        await update.message.reply_text("❌ Usage: /leaders <nba|nhl|nfl>")
+        return
+    try:
+        await update.message.reply_text(f"⏳ Récupération leaders {sport}...")
+        msg = format_leaders_message(sport)
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ cmd_leaders: {e}")
+        await update.message.reply_text(f"❌ Erreur leaders: {e}")
+
+
 async def auto_check_game_starts(context):
     """
     Toutes les 5 minutes: alerte quand un match passe à 'In Progress'.
@@ -3587,6 +3635,8 @@ def main():
     app.add_handler(CommandHandler("recap", cmd_recap))
     app.add_handler(CommandHandler("analyse", cmd_analyse))
     app.add_handler(CommandHandler("picks", cmd_picks))
+    app.add_handler(CommandHandler("boxscore", cmd_boxscore))
+    app.add_handler(CommandHandler("leaders", cmd_leaders))
 
     # ── Automations (JobQueue) ───────────────────────────────────────────
     job_queue = app.job_queue
