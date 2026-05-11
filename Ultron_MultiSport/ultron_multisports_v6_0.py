@@ -3076,14 +3076,22 @@ async def auto_send_pronostics(context):
 
     for sport_path, sport_key, emoji in sports_config:
         try:
-            today = datetime.datetime.now().strftime("%Y%m%d")
-            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
-            resp = requests.get(url, timeout=8)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
+            # Vérifier aujourd'hui ET demain (UTC) — les matchs de soirée EDT
+            # ex: 22h EDT = 02h00 UTC lendemain. ESPN indexe par date UTC.
+            now_utc_date = datetime.datetime.utcnow()
+            dates_to_check = [
+                now_utc_date.strftime("%Y%m%d"),
+                (now_utc_date + datetime.timedelta(days=1)).strftime("%Y%m%d"),
+            ]
 
-            for event in data.get('events', []):
+            all_events = []
+            for date_str_q in dates_to_check:
+                url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={date_str_q}"
+                resp = requests.get(url, timeout=8)
+                if resp.status_code == 200:
+                    all_events.extend(resp.json().get('events', []))
+
+            for event in all_events:
                 try:
                     status_type = event.get('status', {}).get('type', {})
                     status_desc = status_type.get('description', '').lower()
@@ -3433,14 +3441,18 @@ async def auto_check_game_starts(context):
     for sport_path, emoji in sports_config:
         sport_key = sport_path.split('/')[1]
         try:
-            today = datetime.datetime.now().strftime("%Y%m%d")
-            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
-            resp = requests.get(url, timeout=8)
-            if resp.status_code != 200:
-                continue
-            data = resp.json()
+            now_utc_d = datetime.datetime.utcnow()
+            dates_to_check = [
+                now_utc_d.strftime("%Y%m%d"),
+                (now_utc_d + datetime.timedelta(days=1)).strftime("%Y%m%d"),
+            ]
+            all_events_s = []
+            for dq in dates_to_check:
+                r2 = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={dq}", timeout=8)
+                if r2.status_code == 200:
+                    all_events_s.extend(r2.json().get('events', []))
 
-            for event in data.get('events', []):
+            for event in all_events_s:
                 try:
                     status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
                     event_id = event.get('id', '')
