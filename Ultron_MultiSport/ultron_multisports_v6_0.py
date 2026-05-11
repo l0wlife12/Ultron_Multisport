@@ -130,7 +130,7 @@ if not SKLEARN_AVAILABLE:
 # TIMEZONE QUÉBEC (EDT = UTC-4)
 QUEBEC_TZ = pytz.timezone('America/Toronto')
 
-def get_quebec_time():
+def get_quebec_time() -> datetime.datetime:
     """Retourne l'heure actuelle en fuseau horaire Québec"""
     return datetime.datetime.now(QUEBEC_TZ)
 
@@ -573,28 +573,7 @@ NBA_PLAYER_PROPS = {
     },
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DEMO MATCHUPS FOR TESTING
-# ═══════════════════════════════════════════════════════════════════════════
-DEMO_MATCHES_NBA = [
-    ("Celtics", "Warriors"),
-    ("Lakers", "Suns"),
-    ("Heat", "Mavericks"),
-]
-
-DEMO_MATCHES_NHL = [
-    ("Hurricanes", "Avalanche"),
-    ("Maple Leafs", "Golden Knights"),
-    ("Rangers", "Oilers"),
-]
-
-DEMO_MATCHES_NFL = [
-    ("Chiefs", "49ers"),
-    ("Eagles", "Ravens"),
-    ("Cowboys", "Patriots"),
-]
-
-def get_live_matches_nhl():
+def get_live_matches_nhl() -> list:
     """Récupère les matchs NHL en direct (ESPN API)"""
     global MATCHES_CACHE_NHL, MATCHES_CACHE_TIME
     
@@ -631,7 +610,7 @@ def get_live_matches_nhl():
                                 
                                 if away and home:
                                     daily_matches.append((away, home))
-                    except:
+                    except Exception:
                         continue
                 
                 if daily_matches:
@@ -648,7 +627,7 @@ def get_live_matches_nhl():
         logger.error(f"❌ Erreur NHL: {e}")
         return []
 
-def get_live_matches_nfl():
+def get_live_matches_nfl() -> list:
     """Récupère les matchs NFL en direct (ESPN API)"""
     global MATCHES_CACHE_NFL, MATCHES_CACHE_TIME
     
@@ -685,7 +664,7 @@ def get_live_matches_nfl():
                                 
                                 if away and home:
                                     daily_matches.append((away, home))
-                    except:
+                    except Exception:
                         continue
                 
                 if daily_matches:
@@ -703,7 +682,7 @@ def get_live_matches_nfl():
         logger.error(f"❌ Erreur NFL: {e}")
         return []
 
-def get_live_matches_nba():
+def get_live_matches_nba() -> list:
     """Récupère les matchs NBA en direct (nba_api > ESPN > DÉMO)"""
     global MATCHES_CACHE_NBA, MATCHES_CACHE_TIME
     
@@ -753,7 +732,7 @@ def get_live_matches_nba():
                                 
                                 if away and home:
                                     daily_matches.append((away, home))
-                    except:
+                    except Exception:
                         continue
                 
                 if daily_matches:
@@ -769,7 +748,7 @@ def get_live_matches_nba():
     
     return []
 
-def find_team_nhl(name_input):
+def find_team_nhl(name_input: str) -> str | None:
     """Trouve une équipe NHL par son nom - avec table de correspondance"""
     name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
     
@@ -819,7 +798,7 @@ def find_team_nhl(name_input):
     logger.warning(f"⚠️ Équipe NHL non trouvée: {name_input}")
     return None
 
-def find_team_nfl(name_input):
+def find_team_nfl(name_input: str) -> str | None:
     """Trouve une équipe NFL par son nom - avec table de correspondance"""
     name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
     
@@ -861,7 +840,7 @@ def find_team_nfl(name_input):
     logger.warning(f"⚠️ Équipe NFL non trouvée: {name_input}")
     return None
 
-def find_team_nba(name_input):
+def find_team_nba(name_input: str) -> str | None:
     """Trouve une équipe NBA par son nom - avec table de correspondance"""
     name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
     
@@ -903,7 +882,7 @@ def find_team_nba(name_input):
     logger.warning(f"⚠️ Équipe NBA non trouvée: {name_input}")
     return None
 
-def get_best_odds_nhl(away_team, home_team):
+def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
     """LINE SHOPPING pour NHL"""
     away_clean = find_team_nhl(away_team) or away_team.lower()
     home_clean = find_team_nhl(home_team) or home_team.lower()
@@ -952,7 +931,7 @@ def get_best_odds_nhl(away_team, home_team):
         "home_book": best_home["book"],
     }
 
-def get_best_odds_nfl(away_team, home_team):
+def get_best_odds_nfl(away_team: str, home_team: str) -> dict:
     """LINE SHOPPING pour NFL"""
     away_clean = find_team_nfl(away_team) or away_team.lower()
     home_clean = find_team_nfl(home_team) or home_team.lower()
@@ -987,7 +966,7 @@ def get_best_odds_nfl(away_team, home_team):
         "home_book": best_home["book"],
     }
 
-def get_best_odds_nba(away_team, home_team):
+def get_best_odds_nba(away_team: str, home_team: str) -> dict:
     """LINE SHOPPING pour NBA"""
     away_clean = find_team_nba(away_team) or away_team.lower()
     home_clean = find_team_nba(home_team) or home_team.lower()
@@ -1185,7 +1164,7 @@ def get_live_odds_for_match(away_team: str, home_team: str, api_events: list) ->
     }
 
 
-def generate_prediction_nhl(away_team, home_team):
+def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     """Génère une prédiction pour un match NHL"""
     away_clean = find_team_nhl(away_team) or away_team.lower()
     home_clean = find_team_nhl(home_team) or home_team.lower()
@@ -1205,7 +1184,7 @@ def generate_prediction_nhl(away_team, home_team):
     
     try:
         win_prob_away = 1 / (1 + math.exp(-point_diff / 1.8))
-    except:
+    except Exception:
         win_prob_away = 0.5 + (point_diff / 3.0)
     
     win_prob_away = max(0.05, min(0.95, win_prob_away))
@@ -1305,7 +1284,7 @@ def generate_prediction_nhl(away_team, home_team):
         "ou_confidence": ou_conf,
     }
 
-def generate_prediction_nfl(away_team, home_team):
+def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     """Génère une prédiction pour un match NFL"""
     away_clean = find_team_nfl(away_team) or away_team.lower()
     home_clean = find_team_nfl(home_team) or home_team.lower()
@@ -1325,7 +1304,7 @@ def generate_prediction_nfl(away_team, home_team):
     
     try:
         win_prob_away = 1 / (1 + math.exp(-point_diff / 14.0))
-    except:
+    except Exception:
         win_prob_away = 0.5 + (point_diff / 80.0)
     
     win_prob_away = max(0.05, min(0.95, win_prob_away))
@@ -1417,13 +1396,13 @@ def generate_prediction_nfl(away_team, home_team):
     }
 # ═══════════════════════════════════════════════════════════════════════════
 
-def implied_probability(decimal_odds):
+def implied_probability(decimal_odds: float) -> float:
     """Convertit une cote décimale en probabilité implicite"""
     if decimal_odds <= 1:
         return 0.0
     return 1 / decimal_odds
 
-def expected_value(my_prob, decimal_odds):
+def expected_value(my_prob: float, decimal_odds: float) -> float:
     """Calcule l'EV d'un pari
     
     EV positif = pari intéressant
@@ -1433,7 +1412,7 @@ def expected_value(my_prob, decimal_odds):
         return 0.0
     return (my_prob * (decimal_odds - 1)) - (1 - my_prob)
 
-def kelly_stake(my_prob, decimal_odds, bankroll, fraction=0.5):
+def kelly_stake(my_prob: float, decimal_odds: float, bankroll: float, fraction: float = 0.5) -> float:
     """Mise optimale selon le demi-Kelly (fraction=0.5)
     
     Kelly = (b*p - q) / b où:
@@ -1555,7 +1534,7 @@ def predict_with_ml_model(away_team, home_team):
         # Probabilité réelle de victoire domicile
         try:
             prob_home_win = ML_MODEL.predict_proba(features)[0][1]
-        except:
+        except Exception:
             # Fallback si predict_proba échoue
             pred = ML_MODEL.predict(features)[0]
             prob_home_win = float(pred)
@@ -2088,62 +2067,7 @@ def format_team_props_summary(team_name, props_analysis):
         logger.warning(f"⚠️ Erreur formatage résumé props: {e}")
         return "❌ Erreur"
 
-def generate_prediction_nba(away_team, home_team):
-    """Génère une prédiction pour un match NBA avec stats réelles si dispo"""
-    away_clean = find_team_nba(away_team) or away_team.lower()
-    home_clean = find_team_nba(home_team) or home_team.lower()
-    
-    # Essayer de charger les stats réelles (si sportsreference est dispo)
-    stats_source = "DEFAULT"
-    try:
-        if SPORTSREFERENCE_AVAILABLE and NBA_TEAM_STATS_REAL != NBA_TEAM_STATS:
-            away_stats = NBA_TEAM_STATS_REAL.get(away_clean)
-            home_stats = NBA_TEAM_STATS_REAL.get(home_clean)
-            if away_stats and home_stats:
-                stats_source = "REAL"
-    except:
-        pass
-    
-    # Fallback sur stats statiques
-    if stats_source == "DEFAULT":
-        away_stats = NBA_TEAM_STATS.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
-        home_stats = NBA_TEAM_STATS.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
-    
-    odds_data = get_best_odds_nba(away_clean, home_clean)
-    best_away_ml = odds_data["away_ml"]
-    best_home_ml = odds_data["home_ml"]
-    
-    # Calcul du modèle 4-facteurs pour le basketball
-    away_ppg_diff = away_stats["ppg"] - home_stats["pa"]
-    home_ppg_diff = home_stats["ppg"] - away_stats["pa"]
-    
-    point_diff = away_ppg_diff - home_ppg_diff - 2.5  # Avantage route
-    
-    try:
-        win_prob_away = 1 / (1 + math.exp(-point_diff / 11.0))
-    except:
-        win_prob_away = 0.5 + (point_diff / 50.0)
-    
-    win_prob_away = max(0.05, min(0.95, win_prob_away))
-    
-    # Consensus du marché
-    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
-    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
-    
-    blended_prob = (0.50 * win_prob_away) + (0.50 * market_consensus_away)
-    blended_prob = max(0.05, min(0.95, blended_prob))
-    
-    # EV calculation
-    ev_away = (best_away_ml - 1.0) * blended_prob - (1.0 - blended_prob)
-    ev_home = (best_home_ml - 1.0) * (1.0 - blended_prob) - blended_prob
-    
-    logger.debug(f"{away_team.upper()} @ {home_team.upper()}: [{stats_source}] {away_clean}/{home_clean} | Cotes: {best_away_ml:.2f}/{best_home_ml:.2f} | Blended: {blended_prob:.1%} | EV: {ev_away:.4f}/{ev_home:.4f}")
-    
-    if ev_away > ev_home:
-        pick = f"{away_team.upper()} ML"
-        odds = best_away_ml
-        confidence = int(blended_prob * 100)
-def generate_prediction_nba(away_team, home_team):
+def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     """Génère une prédiction pour un match NBA avec modèle ML si disponible"""
     away_clean = find_team_nba(away_team) or away_team.lower()
     home_clean = find_team_nba(home_team) or home_team.lower()
@@ -2174,7 +2098,7 @@ def generate_prediction_nba(away_team, home_team):
         
         try:
             win_prob_away = 1 / (1 + math.exp(-point_diff / 11.0))
-        except:
+        except Exception:
             win_prob_away = 0.5 + (point_diff / 50.0)
         
         prob_away_win = max(0.05, min(0.95, win_prob_away))
@@ -2316,8 +2240,8 @@ async def nhl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg)
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Erreur: {e}")
+        logger.error(f"❌ nhl_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NHL: {e}")
 
 async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les équipes NFL en direct"""
@@ -2345,11 +2269,8 @@ async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg)
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Erreur: {e}")
-
-# Note: get_live_matches_nba() existe déjà dans ultron_precision_v5_6.py
-# On va utiliser les matchs de démo pour NBA ici
+        logger.error(f"❌ nfl_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NFL: {e}")
 
 async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les équipes NBA en direct"""
@@ -2377,8 +2298,8 @@ async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg)
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Erreur: {e}")
+        logger.error(f"❌ nba_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NBA: {e}")
 
 async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les pronostics pour un sport: /pronostics nha/nhl/nfl"""
@@ -2472,7 +2393,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg2)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"❌ pronostics_nba: {e}")
         await update.message.reply_text(f"❌ Erreur NBA: {e}")
 
 async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2539,7 +2460,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg2)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"❌ pronostics_nhl: {e}")
         await update.message.reply_text(f"❌ Erreur NHL: {e}")
 
 async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2606,16 +2527,8 @@ async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg2)
     except Exception as e:
-        logger.error(f"Error: {e}")
+        logger.error(f"❌ pronostics_nfl: {e}")
         await update.message.reply_text(f"❌ Erreur NFL: {e}")
-        
-        msg2 += "─" * 70 + "\n"
-        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
-        
-        await update.message.reply_text(msg2)
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ Erreur: {e}")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche l'aide"""
