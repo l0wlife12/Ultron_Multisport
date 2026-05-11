@@ -64,6 +64,7 @@ try:
         find_game_context,
         format_all_boxscores,
         format_leaders_message,
+        get_live_player_props,
     )
     ESPN_CONTEXT_AVAILABLE = True
 except ImportError:
@@ -469,6 +470,37 @@ NBA_TEAM_STATS_REAL = NBA_TEAM_STATS
 # ═══════════════════════════════════════════════════════════════════════════
 # NBA PLAYER PROPS - STARS OVER/UNDER LINES
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ── Props joueurs dynamiques (ESPN) ─────────────────────────────────────────
+# Cache journalier : rafraîchi une fois par jour depuis l'API ESPN leaders.
+# Fallback automatique vers NBA_PLAYER_PROPS si ESPN est indisponible.
+_PLAYER_PROPS_CACHE: dict = {}
+_PLAYER_PROPS_CACHE_DATE: str = ""
+
+
+def get_dynamic_player_props() -> dict:
+    """
+    Retourne les props joueurs NBA à jour (moyennes de saison ESPN).
+    Cache journalier — un seul appel ESPN par journée.
+    Fallback sur NBA_PLAYER_PROPS statique si ESPN est indisponible.
+    """
+    global _PLAYER_PROPS_CACHE, _PLAYER_PROPS_CACHE_DATE
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    if _PLAYER_PROPS_CACHE and _PLAYER_PROPS_CACHE_DATE == today:
+        return _PLAYER_PROPS_CACHE
+    if ESPN_CONTEXT_AVAILABLE:
+        try:
+            live = get_live_player_props('NBA', max_players=60)
+            if live:
+                _PLAYER_PROPS_CACHE      = live
+                _PLAYER_PROPS_CACHE_DATE = today
+                logger.info(f"✅ Props ESPN chargés: {len(live)} joueurs NBA")
+                return _PLAYER_PROPS_CACHE
+        except Exception as _e:
+            logger.warning(f"⚠️ Props ESPN erreur: {_e}")
+    logger.warning("⚠️ Props ESPN indisponibles — données statiques utilisées")
+    return NBA_PLAYER_PROPS
+
 
 NBA_PLAYER_PROPS = {
     # EASTERN CONFERENCE - STARS
@@ -1909,49 +1941,41 @@ Ligne: {analysis_ou['line']} pts
 # PLAYER PROPS LOOKUP & ANALYSIS FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def get_player_props(player_name):
+def get_player_props(player_name: str) -> dict | None:
     """
-    Récupère les props d'un joueur NBA star
-    
-    Retour:
-        {'team': str, 'position': str, 'props': {...}} ou None si non trouvé
+    Récupère les props d'un joueur NBA (données ESPN en temps réel, fallback statique).
+    Retourne {'team': str, 'position': str, 'props': {...}} ou None si non trouvé.
     """
     try:
+        props_db = get_dynamic_player_props()
         # Recherche exacte
-        if player_name in NBA_PLAYER_PROPS:
-            return NBA_PLAYER_PROPS[player_name]
-        
+        if player_name in props_db:
+            return props_db[player_name]
         # Recherche approximative (case-insensitive)
         normalized = player_name.lower().strip()
-        for player, data in NBA_PLAYER_PROPS.items():
+        for player, data in props_db.items():
             if normalized == player.lower():
                 return data
-        
-        # Recherche partielle (en contient)
-        for player, data in NBA_PLAYER_PROPS.items():
+        # Recherche partielle
+        for player, data in props_db.items():
             if normalized in player.lower() or player.lower() in normalized:
                 return data
-        
         return None
     except Exception as e:
         logger.warning(f"⚠️ Erreur récupération props: {e}")
         return None
 
-def get_all_players_by_team(team_name):
+def get_all_players_by_team(team_name: str) -> list:
     """
-    Récupère tous les joueurs stars d'une équipe
-    
-    Retour:
-        Liste des joueurs de l'équipe
+    Retourne tous les joueurs connus d'une équipe (données ESPN en temps réel, fallback statique).
     """
     try:
         team_normalized = team_name.lower().strip()
-        players = []
-        
-        for player, data in NBA_PLAYER_PROPS.items():
-            if team_normalized in data['team'].lower():
-                players.append(player)
-        
+        props_db = get_dynamic_player_props()
+        players = [
+            player for player, data in props_db.items()
+            if team_normalized in data['team'].lower()
+        ]
         return sorted(players)
     except Exception as e:
         logger.warning(f"⚠️ Erreur récupération équipe: {e}")
@@ -2573,11 +2597,12 @@ async def player_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         props = get_player_props(player_name)
         
         if not props:
-            available = "\n".join(sorted(NBA_PLAYER_PROPS.keys())[:10])
+            props_db  = get_dynamic_player_props()
+            available = "\n".join(sorted(props_db.keys())[:10])
             msg = f"❌ Joueur non trouvé: {player_name}\n\n"
             msg += "Joueurs disponibles:\n"
             msg += available + "\n"
-            msg += f"\n... et {len(NBA_PLAYER_PROPS)-10} autres"
+            msg += f"\n... et {max(0, len(props_db) - 10)} autres"
             await update.message.reply_text(msg)
             return
         
@@ -2674,19 +2699,20 @@ async def all_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "⭐ JOUEURS STARS NBA DISPONIBLES\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        # Grouper par équipe
+        # Grouper par équipe (données ESPN temps réel)
+        props_db = get_dynamic_player_props()
         teams = {}
-        for player, data in NBA_PLAYER_PROPS.items():
+        for player, data in props_db.items():
             team = data['team']
             if team not in teams:
                 teams[team] = []
             teams[team].append(player)
-        
+
         # Afficher par équipe
         for team in sorted(teams.keys()):
             msg += f"🏀 {team}\n"
             for player in teams[team]:
-                props = NBA_PLAYER_PROPS[player]
+                props = props_db[player]
                 line = props['props']['points']['line']
                 msg += f"   • {player} ({line})\n"
             msg += "\n"

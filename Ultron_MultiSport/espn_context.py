@@ -563,6 +563,104 @@ _LEADER_CATEGORIES = {
             'passingTouchdowns', 'sacks'],
 }
 
+# Mapping: prop key in our format → ESPN leader category name
+_PROPS_STAT_MAP = {
+    'NBA': {
+        'points':   'pointsPerGame',
+        'rebounds': 'reboundsPerGame',
+        'assists':  'assistsPerGame',
+    },
+}
+
+
+def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
+    """
+    Construit les props joueurs en temps réel depuis les moyennes de saison ESPN.
+    Retourne un dict au même format que NBA_PLAYER_PROPS :
+      { player_name: { 'team': str, 'position': str,
+                       'props': { 'points': {'line': float, 'over': 1.90, 'under': 1.90},
+                                  'rebounds': {...}, 'assists': {...} } } }
+    Les cotes sont fixées à 1.90/1.90 (marché standard) car ESPN ne fournit
+    pas de cotes bookmaker — seules les moyennes (= lignes) proviennent d'ESPN.
+    Retourne {} si ESPN est indisponible.
+    """
+    path = SPORT_PATHS.get(sport)
+    stat_map = _PROPS_STAT_MAP.get(sport)
+    if not path or not stat_map:
+        return {}
+
+    try:
+        url  = f"{ESPN_BASE}/{path}/leaders"
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            return {}
+
+        data = resp.json()
+        # Reverse map : ESPN category name → notre prop key
+        target_cats = {v: k for k, v in stat_map.items()}
+        raw: dict = {}  # player_name → {team, position, points, rebounds, assists}
+
+        for cat in data.get('categories', []):
+            cat_name = cat.get('name', '')
+            prop_key = target_cats.get(cat_name)
+            if not prop_key:
+                continue
+
+            for entry in cat.get('leaders', [])[:max_players]:
+                athlete = entry.get('athlete', {})
+                name    = athlete.get('displayName', '')
+                if not name:
+                    continue
+
+                team = (
+                    athlete.get('team', {}).get('shortDisplayName', '') or
+                    athlete.get('team', {}).get('displayName', '')
+                )
+                position = athlete.get('position', {}).get('abbreviation', '')
+
+                try:
+                    value = float(str(entry.get('displayValue', '0')).split()[0])
+                except (ValueError, AttributeError):
+                    continue
+
+                if name not in raw:
+                    raw[name] = {'team': team, 'position': position}
+                raw[name][prop_key] = value
+                # Compléter team/position si manquant
+                if not raw[name].get('team') and team:
+                    raw[name]['team'] = team
+                if not raw[name].get('position') and position:
+                    raw[name]['position'] = position
+
+        # Convertir au format props
+        props_dict: dict = {}
+        for name, info in raw.items():
+            ppg = info.get('points')
+            if ppg is None:
+                continue  # ignorer les joueurs sans donnée de points
+
+            props: dict = {
+                'points': {'line': round(ppg, 1), 'over': 1.90, 'under': 1.90},
+            }
+            rpg = info.get('rebounds')
+            if rpg is not None:
+                props['rebounds'] = {'line': round(rpg, 1), 'over': 1.90, 'under': 1.90}
+            apg = info.get('assists')
+            if apg is not None:
+                props['assists'] = {'line': round(apg, 1), 'over': 1.90, 'under': 1.90}
+
+            props_dict[name] = {
+                'team':     info.get('team', ''),
+                'position': info.get('position', ''),
+                'props':    props,
+            }
+
+        return props_dict
+
+    except Exception as e:
+        print(f"Erreur get_live_player_props {sport}: {e}")
+        return {}
+
 
 def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
     """
