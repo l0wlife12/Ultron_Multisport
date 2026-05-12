@@ -3669,8 +3669,9 @@ async def auto_boxscore(context):
 async def auto_leaders_daily(context):
     """
     Chaque jour à midi heure Québec: envoie les leaders de stats pour NBA, NHL et NFL.
-    Ignore silencieusement les sports hors-saison (message "indisponibles").
+    Désactivé temporairement.
     """
+    return  # TODO: réactiver quand l'endpoint ESPN leaders sera stable
     if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
         return
     for sport in ("NBA", "NHL", "NFL"):
