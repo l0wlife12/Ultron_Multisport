@@ -76,8 +76,8 @@ _db_init()
 
 SPORT_PATHS = {
     "NBA": "basketball/nba",
-    "NHL": "icehockey/nhl",
-    "NFL": "americanfootball/nfl",
+    "NHL": "hockey/nhl",
+    "NFL": "football/nfl",
 }
 
 

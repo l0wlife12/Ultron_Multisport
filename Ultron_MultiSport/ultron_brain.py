@@ -464,13 +464,11 @@ def should_send_pick(sport: str, confidence: int, pick_type: str = "ML") -> bool
     Utilisé dans auto_send_pronostics pour filtrer les picks faibles.
     """
     t = load_thresholds()
+    # Pas assez de données → ne pas filtrer, tout envoyer
+    if t.get("sample_size", 0) < MIN_SAMPLE:
+        return True
     min_conf = t["min_confidence"].get(sport, t["min_confidence"].get("default", 58))
-
-    # Si on a suffisamment de données, appliquer le seuil appris
-    if t.get("sample_size", 0) >= MIN_SAMPLE:
-        return confidence >= min_conf
-    # Avant d'avoir des données → seuil par défaut permissif
-    return confidence >= DEFAULT_THRESHOLDS["min_confidence"]["default"]
+    return confidence >= min_conf
 
 
 # ─────────────────────────────────────────────────────────────────────────────
