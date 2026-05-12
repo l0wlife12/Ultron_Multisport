@@ -2053,6 +2053,7 @@ def get_all_players_by_team(team_name: str) -> list:
         players = [
             player for player, data in props_db.items()
             if team_normalized in data['team'].lower()
+            or data['team'].lower() in team_normalized
         ]
         return sorted(players)
     except Exception as e:
