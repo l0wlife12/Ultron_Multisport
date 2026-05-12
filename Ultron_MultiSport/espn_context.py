@@ -828,10 +828,12 @@ def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
 
 
 def format_leaders_message(sport: str) -> str:
-    """Formate les leaders stats d'un sport pour Telegram."""
+    """Formate les leaders stats d'un sport pour Telegram.
+    Retourne une string vide si les données sont indisponibles (jamais d'erreur envoyée).
+    """
     categories = get_stat_leaders(sport)
     if not categories:
-        return f"❌ Leaders stats {sport} indisponibles (hors saison?)."
+        return ""  # Rien à envoyer — le caller doit ignorer silencieusement
 
     sport_emoji = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(sport, "🎯")
     ranks       = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]

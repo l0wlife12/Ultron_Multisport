@@ -3676,8 +3676,7 @@ async def auto_leaders_daily(context):
     for sport in ("NBA", "NHL", "NFL"):
         try:
             msg = format_leaders_message(sport)
-            # Ne pas envoyer si le sport est hors saison
-            if "indisponibles" in msg:
+            if not msg:  # Données indisponibles — ne rien envoyer
                 logger.info(f"⏭️ Leaders {sport} ignorés (hors saison ou ESPN indisponible)")
                 continue
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
