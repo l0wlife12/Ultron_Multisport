@@ -676,13 +676,13 @@ def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
             return []
-        data          = resp.json()
-        target_cats   = _LEADER_CATEGORIES.get(sport, [])
-        categories    = []
+        data        = resp.json()
+        target_cats = set(_LEADER_CATEGORIES.get(sport, []))
+        categories  = []
 
-        for cat in data.get('categories', []):
-            if cat.get('name', '') not in target_cats:
-                continue
+        all_cats = data.get('categories', [])
+
+        def _parse_cat(cat):
             leaders = []
             for entry in cat.get('leaders', [])[:max_per_cat]:
                 athlete = entry.get('athlete', {})
@@ -696,11 +696,28 @@ def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
                     'value': entry.get('displayValue', '?'),
                 })
             if leaders:
-                categories.append({
+                return {
                     'name':         cat.get('displayName', cat.get('name', '')),
                     'abbreviation': cat.get('abbreviation', cat.get('name', '')[:3].upper()),
                     'leaders':      leaders,
-                })
+                }
+            return None
+
+        # 1er essai : filtre strict sur les noms configurés
+        for cat in all_cats:
+            cat_name = cat.get('name', '')
+            if cat_name in target_cats or cat.get('displayName', '') in target_cats:
+                parsed = _parse_cat(cat)
+                if parsed:
+                    categories.append(parsed)
+
+        # Fallback : si le filtre strict retourne rien, prendre toutes les catégories
+        if not categories:
+            for cat in all_cats[:8]:  # max 8 catégories
+                parsed = _parse_cat(cat)
+                if parsed:
+                    categories.append(parsed)
+
         return categories
     except Exception as e:
         print(f"Erreur get_stat_leaders {sport}: {e}")

@@ -3669,12 +3669,17 @@ async def auto_boxscore(context):
 async def auto_leaders_daily(context):
     """
     Chaque jour à midi heure Québec: envoie les leaders de stats pour NBA, NHL et NFL.
+    Ignore silencieusement les sports hors-saison (message "indisponibles").
     """
     if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
         return
     for sport in ("NBA", "NHL", "NFL"):
         try:
             msg = format_leaders_message(sport)
+            # Ne pas envoyer si le sport est hors saison
+            if "indisponibles" in msg:
+                logger.info(f"⏭️ Leaders {sport} ignorés (hors saison ou ESPN indisponible)")
+                continue
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
             if TELEGRAM_CHAT_ID_VIP:
                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
