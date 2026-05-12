@@ -3162,11 +3162,14 @@ async def auto_send_pronostics(context):
                     status_type = event.get('status', {}).get('type', {})
                     status_desc = status_type.get('description', '').lower()
                     status_name = status_type.get('name', '').lower()
-                    # Ignorer matchs terminés ou en cours
-                    if any(s in status_desc for s in ['final', 'completed', 'in progress', 'halftime']):
+                    # Ignorer matchs terminés
+                    if any(s in status_desc for s in ['final', 'completed']):
                         continue
-                    if any(s in status_name for s in ['status_final', 'status_in_progress']):
+                    if 'status_final' in status_name:
                         continue
+
+                    is_live = any(s in status_desc for s in ['in progress', 'halftime']) or \
+                              'status_in_progress' in status_name
 
                     date_str = event.get('date', '')
                     # ── Parsing robuste : ESPN retourne parfois avec ou sans secondes
@@ -3184,9 +3187,9 @@ async def auto_send_pronostics(context):
 
                     minutes_until = (utc_dt - now_utc).total_seconds() / 60
 
-                    # Fenêtre d'envoi : 20 à 120 min avant le match
-                    # (élargie pour ne pas rater les playoffs NHL en soirée)
-                    if 20 <= minutes_until <= 120:
+                    # Fenêtre d'envoi : 20 à 120 min avant le match OU match déjà en cours
+                    # (pick tardif si le bot a redémarré pendant le match)
+                    if is_live or 20 <= minutes_until <= 120:
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
@@ -3195,8 +3198,8 @@ async def auto_send_pronostics(context):
                             notify_key = f"prono_{date_key}_{sport_key}_{away}_{home}"
                             if notify_key not in _notified_pronostics:
                                 _notified_pronostics.add(notify_key)
-                                upcoming_matches.append((sport_key, emoji, away, home, utc_dt))
-                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min")
+                                upcoming_matches.append((sport_key, emoji, away, home, utc_dt, is_live))
+                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min (live={is_live})")
                             else:
                                 logger.debug(f"⏭️ Déjà notifié [{sport_key}]: {away} @ {home}")
                     else:
@@ -3237,7 +3240,7 @@ async def auto_send_pronostics(context):
 
     # Générer les picks pour chaque match trouvé
     all_picks = []
-    for sport_key, emoji, away, home, match_time in upcoming_matches:
+    for sport_key, emoji, away, home, match_time, match_is_live in upcoming_matches:
         try:
             if sport_key == "nba":
                 pred = generate_prediction_nba(away, home)
@@ -3295,9 +3298,10 @@ async def auto_send_pronostics(context):
                             base_ml_conf = max(10, base_ml_conf - delta)
                             espn_tag = " 🏥⚠️"
 
+                late_tag = " ⚡ EN COURS" if match_is_live else ""
                 all_picks.append({
-                    "label": f"{emoji} {away} @ {home}",
-                    "heure": qc_time.strftime('%H:%M'),
+                    "label": f"{emoji} {away} @ {home}{late_tag}",
+                    "heure": qc_time.strftime('%H:%M') if not match_is_live else "EN COURS",
                     "source": source_tag,
                     # ML
                     "ml_pick": real_ml_pick,
