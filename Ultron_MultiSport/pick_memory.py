@@ -18,6 +18,7 @@ Storage: picks_history.json (local)
     Puis changer : HISTORY_FILE = "/data/picks_history.json"
 """
 
+import io
 import os
 import json
 import uuid
@@ -32,6 +33,46 @@ logger = logging.getLogger(__name__)
 _BASE = "/data" if os.path.isdir("/data") else "."
 HISTORY_FILE = os.path.join(_BASE, "picks_history.json")
 BACKUP_META_FILE = os.path.join(_BASE, "backup_meta.json")
+
+# ── PostgreSQL (Railway DATABASE_URL) ────────────────────────────────────────
+_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+def _db_connect():
+    """Ouvre une connexion psycopg2 si DATABASE_URL est défini."""
+    if not _DATABASE_URL:
+        return None
+    try:
+        import psycopg2
+        conn = psycopg2.connect(_DATABASE_URL, sslmode="require")
+        return conn
+    except Exception as e:
+        logger.error(f"❌ pick_memory DB connexion: {e}")
+        return None
+
+
+def _db_init():
+    """Crée la table pick_store si elle n'existe pas encore."""
+    conn = _db_connect()
+    if not conn:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS pick_store (
+                        id   INTEGER PRIMARY KEY DEFAULT 1,
+                        data JSONB NOT NULL
+                    )
+                """)
+        logger.info("✅ pick_memory: table pick_store prête (PostgreSQL)")
+    except Exception as e:
+        logger.error(f"❌ pick_memory DB init: {e}")
+    finally:
+        conn.close()
+
+
+_db_init()
 
 SPORT_PATHS = {
     "NBA": "basketball/nba",
@@ -56,6 +97,21 @@ def _empty_stats() -> dict:
 
 
 def load_history() -> dict:
+    # Essai PostgreSQL en priorité
+    conn = _db_connect()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT data FROM pick_store WHERE id = 1")
+                    row = cur.fetchone()
+                    if row:
+                        return row[0]  # psycopg2 désérialise JSONB automatiquement
+        except Exception as e:
+            logger.error(f"❌ pick_memory DB load: {e}")
+        finally:
+            conn.close()
+    # Fallback fichier JSON local
     if os.path.exists(HISTORY_FILE):
         try:
             with open(HISTORY_FILE, "r", encoding="utf-8") as f:
@@ -66,6 +122,25 @@ def load_history() -> dict:
 
 
 def _save_history(history: dict):
+    # Sauvegarder dans PostgreSQL si disponible
+    conn = _db_connect()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO pick_store (id, data) VALUES (1, %s)
+                        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
+                        """,
+                        (json.dumps(history, ensure_ascii=False),),
+                    )
+            return  # succès DB, pas besoin d'écrire le fichier
+        except Exception as e:
+            logger.error(f"❌ pick_memory DB save: {e}")
+        finally:
+            conn.close()
+    # Fallback fichier JSON local
     try:
         with open(HISTORY_FILE, "w", encoding="utf-8") as f:
             json.dump(history, f, indent=2, ensure_ascii=False)
@@ -451,16 +526,16 @@ def format_daily_report(days: int = 7) -> str:
 
 async def backup_to_telegram(bot, chat_id: str) -> bool:
     """
-    Envoie picks_history.json comme document Telegram (fichier attaché).
-    Sauvegarde le file_id dans backup_meta.json pour la restauration.
+    Envoie l'historique comme document Telegram.
+    Fonctionne avec DB (export en mémoire) ou fichier JSON local.
     Retourne True si succès.
     """
-    if not os.path.exists(HISTORY_FILE):
-        logger.info("backup_to_telegram: rien à sauvegarder")
-        return False
-
     history = load_history()
     picks_count = len(history.get("picks", []))
+    if picks_count == 0:
+        logger.info("backup_to_telegram: aucun pick à sauvegarder")
+        return False
+
     wins   = history.get("stats", {}).get("wins", 0)
     losses = history.get("stats", {}).get("losses", 0)
     wr     = history.get("stats", {}).get("win_rate", 0.0)
@@ -472,21 +547,15 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
     )
 
     try:
-        with open(HISTORY_FILE, "rb") as f:
-            msg = await bot.send_document(
-                chat_id=chat_id,
-                document=f,
-                filename="picks_history.json",
-                caption=caption,
-            )
-        file_id = msg.document.file_id
-        meta = {
-            "file_id":     file_id,
-            "backed_up_at": datetime.now().isoformat(),
-            "picks_count": picks_count,
-        }
-        with open(BACKUP_META_FILE, "w", encoding="utf-8") as mf:
-            json.dump(meta, mf)
+        # Export history vers un buffer mémoire (fonctionne avec ou sans fichier local)
+        buf = io.BytesIO(json.dumps(history, indent=2, ensure_ascii=False).encode("utf-8"))
+        buf.name = "picks_history.json"
+        msg = await bot.send_document(
+            chat_id=chat_id,
+            document=buf,
+            filename="picks_history.json",
+            caption=caption,
+        )
         logger.info(f"✅ Backup Telegram OK — {picks_count} picks sauvegardés")
         return True
     except Exception as e:
@@ -496,12 +565,12 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
 
 async def restore_from_telegram(bot, chat_id: str) -> bool:
     """
-    Si picks_history.json est absent (après un redéploiement Railway),
-    télécharge le dernier backup depuis Telegram et restaure le fichier.
+    Si DATABASE_URL est défini, les données persistent déjà en DB — rien à restaurer.
+    Sinon, télécharge le dernier backup Telegram vers le fichier local.
     Retourne True si une restauration a eu lieu.
     """
-    if os.path.exists(HISTORY_FILE):
-        return False  # déjà présent, rien à faire
+    if _DATABASE_URL:
+        return False  # DB persistante, pas besoin de restaurer
 
     if not os.path.exists(BACKUP_META_FILE):
         logger.info("restore_from_telegram: aucun backup_meta.json trouvé")
