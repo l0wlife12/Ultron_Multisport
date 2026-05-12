@@ -3931,7 +3931,7 @@ def main():
     else:
         logger.warning("⚠️ XGBoost non disponible - Prédictions player props désactivées")
 
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
