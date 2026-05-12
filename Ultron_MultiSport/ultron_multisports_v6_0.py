@@ -3168,9 +3168,6 @@ async def auto_send_pronostics(context):
                     if 'status_final' in status_name:
                         continue
 
-                    is_live = any(s in status_desc for s in ['in progress', 'halftime']) or \
-                              'status_in_progress' in status_name
-
                     date_str = event.get('date', '')
                     # ── Parsing robuste : ESPN retourne parfois avec ou sans secondes
                     # ex: "2026-05-10T23:00Z"  ou  "2026-05-10T23:00:00Z"
@@ -3187,9 +3184,13 @@ async def auto_send_pronostics(context):
 
                     minutes_until = (utc_dt - now_utc).total_seconds() / 60
 
-                    # Fenêtre d'envoi : 20 à 120 min avant le match OU match déjà en cours
-                    # (pick tardif si le bot a redémarré pendant le match)
-                    if is_live or 20 <= minutes_until <= 120:
+                    # is_live = match déjà commencé (heure passée) mais pas terminé.
+                    # On utilise minutes_until plutôt que le texte de statut ESPN
+                    # car NHL peut retourner "End of 1st Period", "Overtime", etc.
+                    is_live = minutes_until < 20
+
+                    # Fenêtre d'envoi : dans les 120 min avant le match OU match en cours
+                    if minutes_until <= 120:
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
@@ -3208,7 +3209,7 @@ async def auto_send_pronostics(context):
                             comp = event.get('competitions', [{}])[0]
                             t1 = comp.get('competitors', [{}])[0].get('team', {}).get('displayName', '?')
                             t2 = comp.get('competitors', [{}])[1].get('team', {}).get('displayName', '?') if len(comp.get('competitors', [])) > 1 else '?'
-                            logger.debug(f"⏳ Hors fenêtre [{sport_key}]: {t1}@{t2} dans {minutes_until:.0f} min (statut: {status_desc})")
+                            logger.info(f"⏳ Hors fenêtre [{sport_key}]: {t1}@{t2} dans {minutes_until:.0f} min (statut: {status_desc})")
                         except Exception:
                             pass
                 except Exception as e:
