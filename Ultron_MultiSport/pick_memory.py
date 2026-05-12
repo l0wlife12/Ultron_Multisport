@@ -44,7 +44,9 @@ def _db_connect():
         return None
     try:
         import psycopg2
-        conn = psycopg2.connect(_DATABASE_URL, sslmode="require")
+        # Railway injecte 'postgres://' mais psycopg2 requiert 'postgresql://'
+        url = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        conn = psycopg2.connect(url)
         return conn
     except Exception as e:
         logger.error(f"❌ pick_memory DB connexion: {e}")
