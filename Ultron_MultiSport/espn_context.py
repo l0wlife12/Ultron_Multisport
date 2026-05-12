@@ -5,6 +5,9 @@ ESPN Context Module — Blessures + Stats en temps réel
 Utilisé par ULTRON pour ajuster les probabilités avant les matchs
 """
 
+import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 import requests
 from datetime import date, datetime
 from typing import List
@@ -24,6 +27,16 @@ SPORT_PATHS = {
     'NHL': 'icehockey/nhl',
     'NFL': 'americanfootball/nfl',
 }
+
+# Core API paths (different from site API)
+CORE_SPORT_MAP = {
+    'NBA': ('basketball', 'nba'),
+    'NHL': ('hockey', 'nhl'),
+    'NFL': ('football', 'nfl'),
+}
+
+# Module-level cache for athlete names (valid for process lifetime)
+_ath_name_cache: dict = {}
 
 # ─────────────────────────────────────────
 # BLESSURES EN TEMPS RÉEL
@@ -573,9 +586,70 @@ _PROPS_STAT_MAP = {
 }
 
 
+def _current_season_year(sport: str) -> int:
+    """Determine current ESPN season year. NBA/NHL use ending year; NFL uses starting year."""
+    today = date.today()
+    if sport == 'NFL':
+        return today.year - 1 if today.month < 9 else today.year
+    return today.year  # NBA/NHL: labelled by the year the season ends
+
+
+def _fetch_athlete_info(sport_path: str, league: str, ref_url: str) -> dict:
+    """Resolve athlete name+position from a Core API $ref URL (with local cache)."""
+    m = re.search(r'/athletes/(\d+)', ref_url)
+    if not m:
+        return {}
+    aid = m.group(1)
+    key = f'{sport_path}/{league}/{aid}'
+    if key in _ath_name_cache:
+        return _ath_name_cache[key]
+    try:
+        url = f"{ESPN_CORE}/{sport_path}/leagues/{league}/athletes/{aid}"
+        r = requests.get(url, timeout=5)
+        if r.status_code == 200:
+            d = r.json()
+            name = d.get('displayName', d.get('fullName', '?'))
+            pos = ''
+            if isinstance(d.get('position'), dict):
+                pos = d['position'].get('abbreviation', '')
+            result = {'name': name, 'position': pos}
+            _ath_name_cache[key] = result
+            return result
+    except Exception:
+        pass
+    return {}
+
+
+def _get_core_leaders_raw(sport: str) -> dict:
+    """
+    Fetch ESPN Core API leaders for the current season.
+    Returns {'data': <response dict>, 'sport_path': str, 'league': str}
+    or {} if unavailable.
+    Tries type 3 (playoffs) then type 2 (regular season), current year then prior.
+    """
+    paths = CORE_SPORT_MAP.get(sport)
+    if not paths:
+        return {}
+    sp, lg = paths
+    yr = _current_season_year(sport)
+
+    for season_year in [yr, yr - 1]:
+        for stype in [3, 2]:
+            u = f"{ESPN_CORE}/{sp}/leagues/{lg}/seasons/{season_year}/types/{stype}/leaders"
+            try:
+                r = requests.get(u, timeout=8)
+                if r.status_code == 200:
+                    d = r.json()
+                    if d.get('categories'):
+                        return {'data': d, 'sport_path': sp, 'league': lg}
+            except Exception:
+                continue
+    return {}
+
+
 def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
     """
-    Construit les props joueurs en temps réel depuis les moyennes de saison ESPN.
+    Construit les props joueurs en temps réel depuis les moyennes de saison ESPN Core API.
     Retourne un dict au même format que NBA_PLAYER_PROPS :
       { player_name: { 'team': str, 'position': str,
                        'props': { 'points': {'line': float, 'over': 1.90, 'under': 1.90},
@@ -584,21 +658,25 @@ def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
     pas de cotes bookmaker — seules les moyennes (= lignes) proviennent d'ESPN.
     Retourne {} si ESPN est indisponible.
     """
-    path = SPORT_PATHS.get(sport)
     stat_map = _PROPS_STAT_MAP.get(sport)
-    if not path or not stat_map:
+    if not stat_map:
         return {}
 
     try:
-        url  = f"{ESPN_BASE}/{path}/leaders"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
+        raw_data = _get_core_leaders_raw(sport)
+        if not raw_data:
             return {}
 
-        data = resp.json()
+        data = raw_data['data']
+        sp   = raw_data['sport_path']
+        lg   = raw_data['league']
+
         # Reverse map : ESPN category name → notre prop key
         target_cats = {v: k for k, v in stat_map.items()}
-        raw: dict = {}  # player_name → {team, position, points, rebounds, assists}
+        # athlete_id → {prop_key: value, ...}
+        player_stats: dict = {}
+        # athlete_id → $ref URL (to resolve name/position)
+        athlete_refs: dict = {}
 
         for cat in data.get('categories', []):
             cat_name = cat.get('name', '')
@@ -607,50 +685,62 @@ def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
                 continue
 
             for entry in cat.get('leaders', [])[:max_players]:
-                athlete = entry.get('athlete', {})
-                name    = athlete.get('displayName', '')
-                if not name:
+                ath_ref = entry.get('athlete', {}).get('$ref', '')
+                if not ath_ref:
                     continue
-
-                team = (
-                    athlete.get('team', {}).get('shortDisplayName', '') or
-                    athlete.get('team', {}).get('displayName', '')
-                )
-                position = athlete.get('position', {}).get('abbreviation', '')
+                m = re.search(r'/athletes/(\d+)', ath_ref)
+                if not m:
+                    continue
+                aid = m.group(1)
 
                 try:
                     value = float(str(entry.get('displayValue', '0')).split()[0])
                 except (ValueError, AttributeError):
                     continue
 
-                if name not in raw:
-                    raw[name] = {'team': team, 'position': position}
-                raw[name][prop_key] = value
-                # Compléter team/position si manquant
-                if not raw[name].get('team') and team:
-                    raw[name]['team'] = team
-                if not raw[name].get('position') and position:
-                    raw[name]['position'] = position
+                if aid not in player_stats:
+                    player_stats[aid] = {}
+                    athlete_refs[aid] = ath_ref
+                player_stats[aid][prop_key] = value
+
+        if not player_stats:
+            return {}
+
+        # Resolve all athlete names in parallel
+        name_map: dict = {}
+        with ThreadPoolExecutor(max_workers=min(len(athlete_refs), 20)) as ex:
+            future_map = {
+                ex.submit(_fetch_athlete_info, sp, lg, ref): aid
+                for aid, ref in athlete_refs.items()
+            }
+            for fut in as_completed(future_map):
+                aid = future_map[fut]
+                name_map[aid] = fut.result()
 
         # Convertir au format props
         props_dict: dict = {}
-        for name, info in raw.items():
-            ppg = info.get('points')
+        for aid, stats in player_stats.items():
+            ppg = stats.get('points')
             if ppg is None:
-                continue  # ignorer les joueurs sans donnée de points
+                continue
+
+            info = name_map.get(aid, {})
+            name = info.get('name', '')
+            if not name or name == '?':
+                continue
 
             props: dict = {
                 'points': {'line': round(ppg, 1), 'over': 1.90, 'under': 1.90},
             }
-            rpg = info.get('rebounds')
+            rpg = stats.get('rebounds')
             if rpg is not None:
                 props['rebounds'] = {'line': round(rpg, 1), 'over': 1.90, 'under': 1.90}
-            apg = info.get('assists')
+            apg = stats.get('assists')
             if apg is not None:
                 props['assists'] = {'line': round(apg, 1), 'over': 1.90, 'under': 1.90}
 
             props_dict[name] = {
-                'team':     info.get('team', ''),
+                'team':     '',
                 'position': info.get('position', ''),
                 'props':    props,
             }
@@ -664,19 +754,18 @@ def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
 
 def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
     """
-    Récupère les leaders de statistiques depuis ESPN.
+    Récupère les leaders de statistiques depuis ESPN Core API.
     Retourne liste de dicts :
       { 'name': str, 'abbreviation': str, 'leaders': [{name, team, value}] }
     """
-    path = SPORT_PATHS.get(sport)
-    if not path:
-        return []
     try:
-        url  = f"{ESPN_BASE}/{path}/leaders"
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
+        raw = _get_core_leaders_raw(sport)
+        if not raw:
             return []
-        data        = resp.json()
+
+        data        = raw['data']
+        sp          = raw['sport_path']
+        lg          = raw['league']
         target_cats = set(_LEADER_CATEGORIES.get(sport, []))
         categories  = []
 
@@ -684,15 +773,29 @@ def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
 
         def _parse_cat(cat):
             leaders = []
-            for entry in cat.get('leaders', [])[:max_per_cat]:
-                athlete = entry.get('athlete', {})
-                team    = (
-                    athlete.get('team', {}).get('shortDisplayName', '') or
-                    athlete.get('team', {}).get('displayName', '')
-                )
+            # Collect all athlete refs to resolve in parallel
+            entries = cat.get('leaders', [])[:max_per_cat]
+            refs = [e.get('athlete', {}).get('$ref', '') for e in entries]
+
+            # Parallel athlete name resolution
+            resolved = {}
+            with ThreadPoolExecutor(max_workers=min(len(refs), 10)) as ex:
+                future_map = {
+                    ex.submit(_fetch_athlete_info, sp, lg, ref): i
+                    for i, ref in enumerate(refs) if ref
+                }
+                for fut in as_completed(future_map):
+                    idx = future_map[fut]
+                    resolved[idx] = fut.result()
+
+            for i, entry in enumerate(entries):
+                info = resolved.get(i, {})
+                name = info.get('name', '?')
+                if not name or name == '?':
+                    continue
                 leaders.append({
-                    'name':  athlete.get('displayName', athlete.get('shortName', '?')),
-                    'team':  team,
+                    'name':  name,
+                    'team':  '',
                     'value': entry.get('displayValue', '?'),
                 })
             if leaders:
@@ -713,7 +816,7 @@ def get_stat_leaders(sport: str, max_per_cat: int = 5) -> list:
 
         # Fallback : si le filtre strict retourne rien, prendre toutes les catégories
         if not categories:
-            for cat in all_cats[:8]:  # max 8 catégories
+            for cat in all_cats[:8]:
                 parsed = _parse_cat(cat)
                 if parsed:
                     categories.append(parsed)
