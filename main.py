@@ -10,10 +10,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Debug: afficher toutes les variables disponibles (noms seulement, pas les valeurs)
+railway_vars = [k for k in os.environ.keys()]
+logger.info(f"🔍 Variables disponibles: {sorted(railway_vars)}")
+
 # Valider le token AVANT tout import
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN') or os.getenv('telegram_token')
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN n'est pas configuré dans les variables d'environnement Railway")
+    logger.error(f"Variables présentes: {[k for k in os.environ.keys() if 'TELEGRAM' in k.upper() or 'TOKEN' in k.upper()]}")
     sys.exit(1)
 
 logger.info("✅ TELEGRAM_TOKEN trouvé")
