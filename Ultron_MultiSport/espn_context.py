@@ -37,6 +37,7 @@ CORE_SPORT_MAP = {
 
 # Module-level cache for athlete names (valid for process lifetime)
 _ath_name_cache: dict = {}
+_team_name_cache: dict = {}  # ESPN team id → display name
 
 # ─────────────────────────────────────────
 # BLESSURES EN TEMPS RÉEL
@@ -594,8 +595,29 @@ def _current_season_year(sport: str) -> int:
     return today.year  # NBA/NHL: labelled by the year the season ends
 
 
+def _fetch_team_name(team_ref_url: str) -> str:
+    """Resolve team displayName from a Core API team $ref URL (with local cache)."""
+    m = re.search(r'/teams/(\d+)', team_ref_url)
+    if not m:
+        return ''
+    tid = m.group(1)
+    if tid in _team_name_cache:
+        return _team_name_cache[tid]
+    try:
+        r = requests.get(team_ref_url, timeout=5)
+        if r.status_code == 200:
+            d = r.json()
+            name = d.get('displayName', d.get('name', ''))
+            if name:
+                _team_name_cache[tid] = name
+                return name
+    except Exception:
+        pass
+    return ''
+
+
 def _fetch_athlete_info(sport_path: str, league: str, ref_url: str) -> dict:
-    """Resolve athlete name+position from a Core API $ref URL (with local cache)."""
+    """Resolve athlete name, position, and team from a Core API $ref URL (with local cache)."""
     m = re.search(r'/athletes/(\d+)', ref_url)
     if not m:
         return {}
@@ -612,7 +634,14 @@ def _fetch_athlete_info(sport_path: str, league: str, ref_url: str) -> dict:
             pos = ''
             if isinstance(d.get('position'), dict):
                 pos = d['position'].get('abbreviation', '')
-            result = {'name': name, 'position': pos}
+            # Resolve team name from $ref
+            team_name = ''
+            team_ref = d.get('team', {})
+            if isinstance(team_ref, dict):
+                team_url = team_ref.get('$ref', '')
+                if team_url:
+                    team_name = _fetch_team_name(team_url)
+            result = {'name': name, 'position': pos, 'team': team_name}
             _ath_name_cache[key] = result
             return result
     except Exception:
@@ -740,7 +769,7 @@ def get_live_player_props(sport: str = 'NBA', max_players: int = 60) -> dict:
                 props['assists'] = {'line': round(apg, 1), 'over': 1.90, 'under': 1.90}
 
             props_dict[name] = {
-                'team':     '',
+                'team':     info.get('team', ''),
                 'position': info.get('position', ''),
                 'props':    props,
             }
