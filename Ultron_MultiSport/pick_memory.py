@@ -674,20 +674,6 @@ async def restore_from_telegram(bot, chat_id: str) -> bool:
 
         real_count = len(restored_history.get("picks", []))
         logger.info(f"✅ Historique restauré depuis Telegram ({real_count} picks, backup du {backed_at})")
-
-        # Notifie l'admin
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"♻️  ULTRON — Mémoire restaurée\n"
-                    f"📅  Backup du {backed_at}\n"
-                    f"📊  {real_count} picks récupérés"
-                ),
-                disable_notification=True,
-            )
-        except Exception:
-            pass
         return True
     except Exception as e:
         logger.error(f"❌ restore_from_telegram: {e}")
