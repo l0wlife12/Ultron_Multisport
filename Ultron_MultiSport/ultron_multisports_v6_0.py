@@ -3093,26 +3093,52 @@ async def auto_daily_motivation(context):
             logger.error(f"❌ Erreur alertes blessures: {e}")
 
 
-def _player_props_msg_for_match(away: str, home: str) -> str:
+def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> str:
     """
     Analyse et formate les props joueurs NBA pour un match.
+    max_picks : None = tous les picks (VIP) | int = limite le total (FREE).
     Retourne une chaîne vide si aucune value n'est identifiée.
-    (Limité à NBA car NBA_PLAYER_PROPS ne couvre que le basket.)
     """
     try:
         results = analyze_all_player_props(home, away)
-        away_summary = format_team_props_summary(away, results['away_team'])
-        home_summary = format_team_props_summary(home, results['home_team'])
-        has_away = 'value(s) trouvée(s)' in away_summary
-        has_home = 'value(s) trouvée(s)' in home_summary
-        if not has_away and not has_home:
+
+        # Rassembler tous les picks des deux équipes en une liste plate
+        all_picks_raw = []
+        for entry in results.get('away_team', []):
+            if entry['analysis']['side'] != 'none':
+                all_picks_raw.append({'team': away, **entry})
+        for entry in results.get('home_team', []):
+            if entry['analysis']['side'] != 'none':
+                all_picks_raw.append({'team': home, **entry})
+
+        if not all_picks_raw:
             return ""
+
+        # Trier par confiance décroissante puis value_margin
+        _conf_order = {'high': 0, 'medium': 1, 'low': 2}
+        all_picks_raw.sort(
+            key=lambda x: (_conf_order.get(x['analysis']['confidence'], 3),
+                           -x['analysis'].get('value_margin', 0))
+        )
+
+        # Limiter si max_picks défini
+        picks_to_show = all_picks_raw if max_picks is None else all_picks_raw[:max_picks]
+
         msg  = "🌟  P R O P S  J O U E U R S\n"
         msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        if has_away:
-            msg += away_summary + "\n"
-        if has_home:
-            msg += home_summary
+
+        if max_picks is not None:
+            msg += f"🔐  Canal gratuit : top {max_picks} picks\n"
+            msg += "    Rejoins le VIP pour tous les picks ! 👑\n\n"
+
+        for entry in picks_to_show:
+            a  = entry['analysis']
+            ce = {'high': '🔥', 'medium': '⚡', 'low': '📌'}.get(a['confidence'], '📌')
+            side = 'OVER' if a['side'] == 'over' else 'UNDER'
+            msg += f"{ce} {entry['player']}\n"
+            msg += f"   {side} {a['line']} | Pred: {a['predicted_points']:.1f}\n"
+            msg += f"   +{a.get('value_margin', 0):.1f}%\n\n"
+
         return msg.strip()
     except Exception as e:
         logger.debug(f"⚠️ _player_props_msg_for_match: {e}")
@@ -3437,14 +3463,15 @@ async def auto_send_pronostics(context):
         if len(parts) != 2:
             continue
         away_t, home_t = parts[0].strip(), parts[1].strip()
-        props_msg = _player_props_msg_for_match(away_t, home_t)
-        if not props_msg:
-            continue
-        full_props = f"🏀 {away_t} @ {home_t}\n" + props_msg
+        # VIP reçoit tous les picks, FREE seulement les 2 meilleurs
+        props_msg_vip  = _player_props_msg_for_match(away_t, home_t, max_picks=None)
+        props_msg_free = _player_props_msg_for_match(away_t, home_t, max_picks=2)
+        header = f"🏀 {away_t} @ {home_t}\n"
         try:
-            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=full_props)
-            if TELEGRAM_CHAT_ID_VIP:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=full_props)
+            if props_msg_free:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=header + props_msg_free)
+            if TELEGRAM_CHAT_ID_VIP and props_msg_vip:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=header + props_msg_vip)
             logger.info(f"🌟 Props joueurs envoyés: {away_t} @ {home_t}")
         except Exception as _pe:
             logger.error(f"❌ Props joueurs envoi: {_pe}")
