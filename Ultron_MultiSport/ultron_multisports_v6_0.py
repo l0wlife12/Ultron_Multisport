@@ -3733,8 +3733,7 @@ async def _post_init(app):
 
 async def auto_backup_memory(context):
     """Toutes les 6h : sauvegarde picks_history.json dans Telegram."""
-    if PICK_MEMORY_AVAILABLE and TELEGRAM_CHAT_ID:
-        await backup_to_telegram(context.bot, TELEGRAM_CHAT_ID)
+    return  # Backup Telegram désactivé — persistance via PostgreSQL
 
 
 async def auto_daily_recap(context):
