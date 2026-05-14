@@ -55,8 +55,13 @@ def _db_connect():
 
 def _db_init():
     """Crée la table pick_store si elle n'existe pas encore."""
+    if not _DATABASE_URL:
+        logger.info("ℹ️  pick_memory: DATABASE_URL absent — stockage JSON local uniquement")
+        logger.info(f"    Fichier: {HISTORY_FILE}")
+        return
     conn = _db_connect()
     if not conn:
+        logger.warning("⚠️  pick_memory: DATABASE_URL présent mais connexion échouée — fallback JSON")
         return
     try:
         with conn:
@@ -528,8 +533,9 @@ def format_daily_report(days: int = 7) -> str:
 
 async def backup_to_telegram(bot, chat_id: str) -> bool:
     """
-    Envoie l'historique comme document Telegram.
-    Fonctionne avec DB (export en mémoire) ou fichier JSON local.
+    Envoie l'historique comme document Telegram et épingle un message de metadata.
+    Le message épinglé (ULTRON_BACKUP_META) permet de restaurer même après un
+    redéploiement Railway qui efface le filesystem éphémère.
     Retourne True si succès.
     """
     history = load_history()
@@ -541,6 +547,7 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
     wins   = history.get("stats", {}).get("wins", 0)
     losses = history.get("stats", {}).get("losses", 0)
     wr     = history.get("stats", {}).get("win_rate", 0.0)
+    now    = datetime.now().isoformat()
 
     caption = (
         f"🔒 ULTRON — Backup mémoire\n"
@@ -558,7 +565,45 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
             filename="picks_history.json",
             caption=caption,
         )
-        logger.info(f"✅ Backup Telegram OK — {picks_count} picks sauvegardés")
+        file_id = msg.document.file_id
+
+        # ── Sauvegarde locale du file_id (fast path pour restore) ──────────
+        meta = {
+            "file_id":      file_id,
+            "message_id":   msg.message_id,
+            "backed_up_at": now,
+            "picks_count":  picks_count,
+        }
+        try:
+            with open(BACKUP_META_FILE, "w", encoding="utf-8") as mf:
+                json.dump(meta, mf, indent=2)
+        except OSError:
+            pass  # filesystem peut être read-only sur Railway, on continue
+
+        # ── Épingle un message de metadata dans le chat ─────────────────────
+        # Ce message survit aux redéploiements Railway et permet la restauration
+        # même quand backup_meta.json a été effacé.
+        meta_text = (
+            f"📦 ULTRON_BACKUP_META\n"
+            f"file_id:{file_id}\n"
+            f"picks:{picks_count}\n"
+            f"date:{now[:16]}"
+        )
+        try:
+            meta_msg = await bot.send_message(
+                chat_id=chat_id,
+                text=meta_text,
+                disable_notification=True,
+            )
+            await bot.pin_chat_message(
+                chat_id=chat_id,
+                message_id=meta_msg.message_id,
+                disable_notification=True,
+            )
+        except Exception as pin_err:
+            logger.warning(f"⚠️ backup_to_telegram: pin échoué (non critique): {pin_err}")
+
+        logger.info(f"✅ Backup Telegram OK — {picks_count} picks sauvegardés (file_id: {file_id[:20]}...)")
         return True
     except Exception as e:
         logger.error(f"❌ backup_to_telegram: {e}")
@@ -567,30 +612,68 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
 
 async def restore_from_telegram(bot, chat_id: str) -> bool:
     """
-    Si DATABASE_URL est défini, les données persistent déjà en DB — rien à restaurer.
-    Sinon, télécharge le dernier backup Telegram vers le fichier local.
+    Restaure l'historique des picks depuis Telegram au démarrage du bot.
+    Stratégie (du plus rapide au plus fiable) :
+      1. Si DATABASE_URL est actif → données déjà persistantes, rien à faire.
+      2. Si backup_meta.json local présent → utilise le file_id qu'il contient.
+      3. Sinon → cherche un message épinglé "ULTRON_BACKUP_META" dans le chat
+         (ce message est épinglé par backup_to_telegram à chaque backup).
     Retourne True si une restauration a eu lieu.
     """
     if _DATABASE_URL:
         return False  # DB persistante, pas besoin de restaurer
 
-    if not os.path.exists(BACKUP_META_FILE):
-        logger.info("restore_from_telegram: aucun backup_meta.json trouvé")
+    file_id     = None
+    picks_count = "?"
+    backed_at   = "?"
+
+    # ── Tentative 1 : backup_meta.json local ──────────────────────────────
+    if os.path.exists(BACKUP_META_FILE):
+        try:
+            with open(BACKUP_META_FILE, "r", encoding="utf-8") as mf:
+                meta = json.load(mf)
+            file_id     = meta.get("file_id")
+            picks_count = meta.get("picks_count", "?")
+            backed_at   = meta.get("backed_up_at", "?")[:16]
+            logger.info(f"restore_from_telegram: file_id trouvé dans backup_meta.json")
+        except Exception as e:
+            logger.warning(f"⚠️ restore: impossible de lire backup_meta.json: {e}")
+
+    # ── Tentative 2 : message épinglé dans le chat ─────────────────────────
+    if not file_id:
+        try:
+            chat = await bot.get_chat(chat_id)
+            pinned = getattr(chat, "pinned_message", None)
+            if pinned and getattr(pinned, "text", None) and "ULTRON_BACKUP_META" in pinned.text:
+                for line in pinned.text.split("\n"):
+                    if line.startswith("file_id:"):
+                        file_id = line.split(":", 1)[1].strip()
+                    elif line.startswith("picks:"):
+                        picks_count = line.split(":", 1)[1].strip()
+                    elif line.startswith("date:"):
+                        backed_at = line.split(":", 1)[1].strip()
+                if file_id:
+                    logger.info("restore_from_telegram: file_id trouvé dans le message épinglé")
+        except Exception as e:
+            logger.warning(f"⚠️ restore: impossible de lire le message épinglé: {e}")
+
+    if not file_id:
+        logger.info("restore_from_telegram: aucun backup trouvé (premier démarrage ?)")
         return False
 
+    # ── Téléchargement et restauration ────────────────────────────────────
     try:
-        with open(BACKUP_META_FILE, "r", encoding="utf-8") as mf:
-            meta = json.load(mf)
-        file_id = meta.get("file_id")
-        if not file_id:
-            return False
-
         tg_file = await bot.get_file(file_id)
-        await tg_file.download_to_drive(HISTORY_FILE)
+        buf = io.BytesIO()
+        await tg_file.download_to_memory(buf)
+        buf.seek(0)
+        restored_history = json.load(buf)
 
-        picks_count = meta.get("picks_count", "?")
-        backed_at   = meta.get("backed_up_at", "?")[:16]
-        logger.info(f"✅ Historique restauré depuis Telegram ({picks_count} picks, backup du {backed_at})")
+        # Sauvegarde via _save_history (DB si dispo, sinon JSON local)
+        _save_history(restored_history)
+
+        real_count = len(restored_history.get("picks", []))
+        logger.info(f"✅ Historique restauré depuis Telegram ({real_count} picks, backup du {backed_at})")
 
         # Notifie l'admin
         try:
@@ -599,8 +682,9 @@ async def restore_from_telegram(bot, chat_id: str) -> bool:
                 text=(
                     f"♻️  ULTRON — Mémoire restaurée\n"
                     f"📅  Backup du {backed_at}\n"
-                    f"📊  {picks_count} picks récupérés"
+                    f"📊  {real_count} picks récupérés"
                 ),
+                disable_notification=True,
             )
         except Exception:
             pass
