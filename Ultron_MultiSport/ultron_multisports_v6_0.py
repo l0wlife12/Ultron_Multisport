@@ -3158,6 +3158,8 @@ async def auto_send_pronostics(context):
     now_utc = datetime.datetime.now(pytz.utc)
     date_key = quebec_time.strftime('%Y-%m-%d')
 
+    logger.info(f"🔍 auto_send_pronostics: vérification des matchs... (Québec: {quebec_time.strftime('%H:%M')}, UTC: {now_utc.strftime('%H:%M')})")
+
     sports_config = [
         ("basketball/nba", "nba", "🏀"),
         ("hockey/nhl", "nhl", "🏒"),
@@ -3181,7 +3183,13 @@ async def auto_send_pronostics(context):
                 url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={date_str_q}"
                 resp = requests.get(url, timeout=8)
                 if resp.status_code == 200:
+                    events_cnt = len(resp.json().get('events', []))
+                    logger.debug(f"  [{sport_key}] {date_str_q}: {events_cnt} events ESPN")
                     all_events.extend(resp.json().get('events', []))
+            
+            if not all_events:
+                logger.info(f"ℹ️  auto_send_pronostics [{sport_key}]: AUCUN match trouvé pour {dates_to_check}")
+                continue
 
             for event in all_events:
                 try:
@@ -3242,9 +3250,10 @@ async def auto_send_pronostics(context):
                     logger.warning(f"⚠️ auto_send_pronostics event error [{sport_key}]: {e}")
                     continue
         except Exception as e:
-            logger.debug(f"⚠️ auto_send_pronostics {sport_key}: {e}")
+            logger.error(f"❌ auto_send_pronostics [{sport_key}] ERREUR: {e}")
 
     if not upcoming_matches:
+        logger.warning(f"⚠️ auto_send_pronostics: AUCUN match dans la fenêtre 120min — rien à envoyer")
         return
 
     # ── Récupérer les cotes en temps réel UNE FOIS par sport (Odds API) ──
