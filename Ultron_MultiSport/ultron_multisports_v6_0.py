@@ -3862,6 +3862,25 @@ async def cmd_analyse(update, context):
 
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
+    
+    # ── DIAGNOSTIC DB AU DÉMARRAGE ────────────────────────────────────
+    db_status = os.environ.get("DATABASE_URL", "")
+    if db_status:
+        logger.info("🔍 DATABASE_URL détecté — TEST DE CONNEXION...")
+        try:
+            import psycopg2
+            url_fixed = db_status.replace("postgres://", "postgresql://", 1)
+            conn = psycopg2.connect(url_fixed)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1;")
+            logger.info("✅ POSTGRESQL CONNECTÉ — Picks persisteront en DB")
+            conn.close()
+        except Exception as e:
+            logger.error(f"❌ POSTGRESQL ERREUR: {e} — Fallback JSON seulement")
+    else:
+        logger.warning("⚠️ DATABASE_URL ABSENT — Fallback JSON local (ÉPHÉMÈRE sur Railway!)")
+    
     app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
 
     # ── Commandes manuelles ──────────────────────────────────────────────
