@@ -3730,6 +3730,7 @@ async def auto_backup_memory(context):
 
 async def auto_daily_recap(context):
     """23h00 heure Québec : résumé de tous les picks du jour avec résultats."""
+    return  # Récaps désactivés — problème picks en investigation
     if not TELEGRAM_CHAT_ID:
         logger.error("❌ auto_daily_recap: TELEGRAM_CHAT_ID non configuré")
         return
