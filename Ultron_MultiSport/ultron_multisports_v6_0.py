@@ -3682,24 +3682,7 @@ async def auto_boxscore(context):
     Toutes les 20 minutes: envoie les box scores des matchs en cours.
     Envoyé uniquement si au moins un match est 'In Progress'.
     """
-    if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
-        return
-    import asyncio
-    for sport in ("NBA", "NHL", "NFL"):
-        try:
-            games = get_live_game_ids(sport)
-            live = [g for g in games if 'progress' in g.get('status', '').lower()]
-            if not live:
-                continue
-            messages = format_all_boxscores(sport)
-            for msg in messages:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
-                if TELEGRAM_CHAT_ID_VIP:
-                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
-                await asyncio.sleep(0.5)
-            logger.info(f"📊 Auto box scores {sport}: {len(live)} match(s) en cours")
-        except Exception as e:
-            logger.error(f"❌ auto_boxscore {sport}: {e}")
+    return  # Boxscores automatiques désactivés — run en backend/logs uniquement
 
 
 async def auto_leaders_daily(context):
