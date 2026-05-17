@@ -3428,20 +3428,34 @@ async def auto_send_pronostics(context):
 
     heure_qc = quebec_time.strftime('%H:%M')
 
-    # ── Canal FREE : 1 seul pick ML ───────────────────────────────────────
+    # ── Canal FREE : 1 seul pick ML en format COMPACT ────────────────────
     free = all_picks[0]
-    msg_free  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg_free += f"🎯  U L T R O N  —  P I C K  G R A T U I T\n"
-    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg_free += f"🏟️  {free['label']}\n"
-    msg_free += f"🕐  Match à  {free['heure']}  (heure Québec)\n\n"
-    msg_free += f"✅  {free['ml_pick']}\n"
-    msg_free += f"💵  Cote :  {free['ml_odds']}\n"
-    msg_free += f"🔥  Confiance :  {free['ml_confidence']}%\n"
-    msg_free += f"📈  EV :  {free['ml_ev_pct']}\n\n"
-    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg_free += f"💎  Spread + O/U + {len(all_picks)-1} autre(s) pick(s)\n"
-    msg_free += "     disponibles en  V I P  ↑"
+    # Format compact: "Rays ML" ou "Dodgers +1.5" ou "Over 8.5"
+    pick_display = free['ml_pick']
+    if " ML" in pick_display:
+        team_name = pick_display.replace(" ML", "").split()[-1]
+        pick_line = f"{team_name} ML"
+    else:
+        pick_line = pick_display
+    
+    msg_free  = pick_line + "\n"
+    # Ajouter les autres picks si multi-match
+    for p in all_picks[1:]:
+        pick_display2 = p['ml_pick']
+        if " ML" in pick_display2:
+            team_name = pick_display2.replace(" ML", "").split()[-1]
+            msg_free += f"{team_name} ML\n"
+        else:
+            msg_free += f"{pick_display2}\n"
+    
+    msg_free += "\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg_free += "🏟️  " + free['label'].replace("⚡ EN COURS", "").strip() + "\n"
+    msg_free += f"🕐  {free['heure']} (Québec)\n"
+    msg_free += f"💵  Cote: {free['ml_odds']}\n"
+    msg_free += f"🔥  Confiance: {free['ml_confidence']}%\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg_free += "💎 Parlays + autres picks en VIP ↑"
 
     try:
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
@@ -3449,7 +3463,7 @@ async def auto_send_pronostics(context):
     except Exception as e:
         logger.error(f"❌ Erreur FREE: {e}")
 
-    # ── Canal VIP : tous les picks avec ML + Spread + O/U ────────────────
+    # ── Canal VIP : tous les picks + PARLAYS BONUS ──────────────────────
     if TELEGRAM_CHAT_ID_VIP:
         src_label = "🟢 Cotes live" if any(p.get('source') == '🟢' for p in all_picks) else "📊 Modèle ML"
         msg_vip  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3474,12 +3488,42 @@ async def auto_send_pronostics(context):
                 msg_vip += f"        Cote {p['ou_odds']}  •  {p['ou_confidence']}%\n"
             msg_vip += f"\n   💰  EV :  {p['ml_ev_pct']}\n"
             msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+        
+        # ── BONUS VIP: PARLAYS SUGGÉRÉS (pas dans le FREE) ──────────────
+        parlays = analyze_and_suggest_parlays(max_suggestions=3)
+        if parlays:
+            msg_vip += "\n" + "═" * 40 + "\n"
+            msg_vip += "🎯  PARLAYS BONUS (Combinaisons)\n"
+            msg_vip += "═" * 40 + "\n"
+            for i, parlay in enumerate(parlays, 1):
+                picks = parlay["picks"]
+                odds = parlay["combined_odds"]
+                conf = parlay["combined_confidence"]
+                msg_vip += f"\n{i}️⃣  PARLAY {len(picks)}-WAY\n"
+                msg_vip += f"   Cotes: {odds:.2f}  •  Confiance: {conf}%\n"
+                msg_vip += "   Picks:\n"
+                for pred in picks:
+                    # Format ultra-compact
+                    away_short = pred['away'].split()[-1]
+                    home_short = pred['home'].split()[-1]
+                    pick_text = pred['pick'].upper()
+                    
+                    if "ML" in pick_text:
+                        team_short = pick_text.replace(" ML", "").split()[-1]
+                        msg_vip += f"      • {team_short} ML\n"
+                    elif "OVER" in pick_text or "UNDER" in pick_text:
+                        ou_line = pred.get('pick_line', 8.5)
+                        direction = "Over" if "OVER" in pick_text else "Under"
+                        msg_vip += f"      • {away_short} vs {home_short} {direction} {ou_line}\n"
+                    else:
+                        msg_vip += f"      • {pick_text}\n"
+        
         msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
         msg_vip += "     Bonne chance! 🍀"
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
-            logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U)")
+            logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U) + Parlays")
         except Exception as e:
             logger.error(f"❌ Erreur VIP: {e}")
 
@@ -4056,6 +4100,43 @@ async def auto_parlays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"❌ auto_parlays_cmd: {e}")
         await update.message.reply_text(f"❌ Erreur parlays: {e}")
+
+
+def format_parlays_compact(picks_list: list) -> str:
+    """
+    Formate les parlays en format ultra-compact pour le canal VIP.
+    Format: Une ligne par pick avec équipe courte et type de pari.
+    Ex:
+    Rays ML
+    Orioles vs Nationals Over 8.5
+    """
+    if not picks_list:
+        return ""
+    
+    lines = []
+    for pick in picks_list:
+        away = pick['away'].split()[-1]  # "Tampa Bay Rays" → "Rays"
+        home = pick['home'].split()[-1]  # "Baltimore Orioles" → "Orioles"
+        pick_text = pick['pick'].upper()
+        
+        # Format: "Rays ML" ou "Orioles vs Nationals Over 8.5"
+        if "ML" in pick_text:
+            # Extraire seulement le nom court de l'équipe
+            team_short = pick_text.replace(" ML", "").split()[-1]
+            lines.append(f"{team_short} ML")
+        elif "OVER" in pick_text or "UNDER" in pick_text:
+            ou_line = pick.get('pick_line', 8.5)
+            direction = "Over" if "OVER" in pick_text else "Under"
+            lines.append(f"{away} vs {home} {direction} {ou_line}")
+        elif "+" in pick_text or "-" in pick_text:
+            # SPREAD
+            spread_val = pick_text.split()[-1]  # "-1.5", "+3"
+            team_short = pick_text.split()[0]  # Première partie
+            lines.append(f"{team_short} {spread_val}")
+        else:
+            lines.append(pick_text)
+    
+    return "\n".join(lines)
 
 
 def main():
