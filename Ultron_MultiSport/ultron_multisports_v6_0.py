@@ -1438,12 +1438,135 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         "ou_confidence": ou_conf,
     }
 
+# ═══════════════════════════════════════════════════════════════════════════
+# MLB STATS LIVE — Récupération temps réel depuis ESPN + Cache 4h
+# ═══════════════════════════════════════════════════════════════════════════
+
+MLB_STATS_CACHE = {}
+MLB_STATS_CACHE_TIME = None
+
+def fetch_mlb_live_stats() -> dict:
+    """
+    Récupère les stats MLB temps réel depuis ESPN (records W-L).
+    Estime Runs/ERA basées sur le win percentage et patterns empiriques.
+    Cache: 4 heures.
+    Retourne: {"yankees": {...}, "braves": {...}, ...}
+    """
+    global MLB_STATS_CACHE, MLB_STATS_CACHE_TIME
+    
+    # Check cache
+    if MLB_STATS_CACHE and MLB_STATS_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MLB_STATS_CACHE_TIME).total_seconds()
+        if elapsed < 14400:  # 4 heures
+            return MLB_STATS_CACHE
+    
+    try:
+        # Récupère les matchs du jour (ESPN retourne les records à jour)
+        today_utc = datetime.datetime.utcnow().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_utc}"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            logger.warning(f"❌ ESPN MLB live stats failed ({resp.status_code}), fallback à stats statiques")
+            return MLB_TEAM_STATS
+        
+        data = resp.json()
+        events = data.get('events', [])
+        
+        # Collecte les records par équipe depuis tous les matchs d'aujourd'hui
+        team_records = {}  # {team_key: {wins: X, losses: Y}}
+        
+        for event in events:
+            comp = event.get('competitions', [{}])[0]
+            competitors = comp.get('competitors', [])
+            
+            for competitor in competitors:
+                team_name = competitor.get('team', {}).get('displayName', '').lower()
+                records = competitor.get('records', [])
+                
+                # Extract overall record (wins-losses)
+                overall_rec = next((r for r in records if r.get('type') == 'total'), None)
+                if overall_rec:
+                    summary = overall_rec.get('summary', '0-0')
+                    try:
+                        wins, losses = map(int, summary.split('-'))
+                        team_key = find_team_mlb(team_name) or team_name
+                        team_records[team_key] = {"wins": wins, "losses": losses}
+                    except Exception:
+                        pass
+        
+        if not team_records:
+            logger.warning("⚠️ No records found in ESPN data, using fallback")
+            return MLB_TEAM_STATS
+        
+        # Construit le dictionnaire de stats en combinant records + estimation stats
+        live_stats = {}
+        for team_key, base_stats in MLB_TEAM_STATS.items():
+            if team_key in team_records:
+                w = team_records[team_key]["wins"]
+                l = team_records[team_key]["losses"]
+                gp = w + l
+                
+                if gp > 0:
+                    win_pct = w / gp
+                else:
+                    win_pct = 0.5
+                
+                # Estime Runs et ERA basées sur win_pct et baseline
+                # Plus haute win% = plus de runs, moins de ERA
+                # Baseline: .500 = 4.0 R, 4.2 RA
+                baseline_r = 4.0
+                baseline_ra = 4.2
+                
+                estimated_r = baseline_r + (win_pct - 0.5) * 2.0  # Varie de 3.0 à 5.0
+                estimated_ra = baseline_ra - (win_pct - 0.5) * 0.8  # Varie de 3.6 à 4.8
+                
+                # Strength basée sur win_pct
+                estimated_strength = int(50 + win_pct * 100)  # 50-150
+                
+                live_stats[team_key] = {
+                    "strength": estimated_strength,
+                    "r": round(estimated_r, 2),
+                    "ra": round(estimated_ra, 2),
+                    "wins": w,
+                    "losses": l,
+                    "gp": gp,
+                    "source": "ESPN_LIVE"
+                }
+            else:
+                # Fallback pour les équipes hors matchs d'aujourd'hui
+                live_stats[team_key] = base_stats.copy()
+                live_stats[team_key]["source"] = "FALLBACK_STATIC"
+        
+        MLB_STATS_CACHE = live_stats
+        MLB_STATS_CACHE_TIME = datetime.datetime.now()
+        logger.info(f"✅ MLB live stats loaded: {len(live_stats)} teams, cache 4h")
+        return live_stats
+    
+    except Exception as e:
+        logger.error(f"❌ fetch_mlb_live_stats error: {e}")
+        return MLB_TEAM_STATS
+
+
+def get_dynamic_team_stats(sport: str) -> dict:
+    """Retourne les stats dynamiques du sport (live si dispo, fallback static)"""
+    if sport == "MLB":
+        return fetch_mlb_live_stats()
+    elif sport == "NBA":
+        return NBA_TEAM_STATS
+    elif sport == "NHL":
+        return NHL_TEAM_STATS
+    else:
+        return {}
+
+
 def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
-    """Génère une prédiction pour un match MLB"""
+    """Génère une prédiction pour un match MLB (avec stats ESPN live)"""
     away_clean = find_team_mlb(away_team) or away_team.lower()
     home_clean = find_team_mlb(home_team) or home_team.lower()
     
-    _mlb_ts = get_dynamic_team_stats('MLB')
+    # Récupère les stats LIVE depuis ESPN (ou fallback statiques)
+    _mlb_ts = fetch_mlb_live_stats()
     away_stats = _mlb_ts.get(away_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
     home_stats = _mlb_ts.get(home_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
     
@@ -1451,11 +1574,12 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
     
-    # Calcul du modèle pour le baseball (runs vs ERA concept)
+    # Calcul du modèle pour le baseball (runs scoring concept)
     away_r_diff = away_stats["r"] - home_stats["ra"]
     home_r_diff = home_stats["r"] - away_stats["ra"]
     
-    run_diff = away_r_diff - home_r_diff - 0.3  # Avantage route minimal
+    # SANS le biais -0.3 : laisse les stats parler d'elles-mêmes
+    run_diff = away_r_diff - home_r_diff
     
     try:
         win_prob_away = 1 / (1 + math.exp(-run_diff / 1.8))
