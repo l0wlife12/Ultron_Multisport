@@ -3392,8 +3392,8 @@ async def auto_send_pronostics(context):
                     # car NHL peut retourner "End of 1st Period", "Overtime", etc.
                     is_live = minutes_until < 20
 
-                    # Fenêtre d'envoi : dans les 120 min avant le match OU match en cours
-                    if minutes_until <= 120:
+                    # Fenêtre d'envoi : dans les 120 min avant le match (exclut les matchs en cours)
+                    if not is_live and minutes_until <= 120:
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
@@ -3403,7 +3403,7 @@ async def auto_send_pronostics(context):
                             if notify_key not in _notified_pronostics:
                                 _notified_pronostics.add(notify_key)
                                 upcoming_matches.append((sport_key, emoji, away, home, utc_dt, is_live))
-                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min (live={is_live})")
+                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min")
                             else:
                                 logger.debug(f"⏭️ Déjà notifié [{sport_key}]: {away} @ {home}")
                     else:
@@ -3503,10 +3503,10 @@ async def auto_send_pronostics(context):
                             base_ml_conf = max(10, base_ml_conf - delta)
                             espn_tag = " 🏥⚠️"
 
-                late_tag = " ⚡ EN COURS" if match_is_live else ""
+                late_tag = ""  # Matchs en cours désactivés
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}{late_tag}",
-                    "heure": qc_time.strftime('%H:%M') if not match_is_live else "EN COURS",
+                    "heure": qc_time.strftime('%H:%M'),
                     "source": source_tag,
                     # ML
                     "ml_pick": real_ml_pick,
@@ -3574,7 +3574,7 @@ async def auto_send_pronostics(context):
     
     msg_free += "\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg_free += "🏟️  " + free['label'].replace("⚡ EN COURS", "").strip() + "\n"
+    msg_free += "🏟️  " + free['label'] + "\n"
     msg_free += f"🕐  {free['heure']} (Québec)\n"
     msg_free += f"💵  Cote: {free['ml_odds']}\n"
     msg_free += f"🔥  Confiance: {free['ml_confidence']}\n"
@@ -3838,9 +3838,10 @@ async def auto_check_game_starts(context):
     """
     Toutes les 5 minutes: alerte quand un match passe à 'In Progress'.
     Envoyé dans FREE et VIP.
+    
+    DÉSACTIVÉ: L'utilisateur a demandé de retirer les notifications de matchs en cours.
     """
-    if not TELEGRAM_CHAT_ID:
-        return
+    return  # Notifications de matchs en cours désactivées
 
     sports_config = [
         ("basketball/nba", "🏀"),
