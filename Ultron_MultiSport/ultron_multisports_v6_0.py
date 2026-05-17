@@ -312,6 +312,7 @@ DRAFTKINGS_ODDS_MLB = {
     ("brewers", "pirates"): {"away_ml": 1.79, "home_ml": 2.01, "total": 8.5, "under": 1.88, "over": 1.92},
     ("mariners", "athletics"): {"away_ml": 2.20, "home_ml": 1.64, "total": 7.0, "under": 1.88, "over": 1.92},
     ("phillies", "nationals"): {"away_ml": 1.82, "home_ml": 1.98, "total": 8.0, "under": 1.88, "over": 1.92},
+}
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NBA TEAMS STATS (2025-2026 Season) - Advanced Metrics
