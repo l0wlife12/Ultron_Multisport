@@ -1084,8 +1084,21 @@ def get_best_odds_mlb(away_team: str, home_team: str) -> dict:
         ("DRAFTKINGS", DRAFTKINGS_ODDS_MLB),
     ]
     
-    best_away = {"odds": 1.0, "book": "N/A"}
-    best_home = {"odds": 1.0, "book": "N/A"}
+    # Cotes par défaut basées sur la force relative (fallback)
+    _mlb_ts = get_dynamic_team_stats('MLB')
+    away_stats = _mlb_ts.get(away_clean, {"strength": 80})
+    home_stats = _mlb_ts.get(home_clean, {"strength": 80})
+    
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.75, "book": "DEFAULT"}
+        best_home = {"odds": 2.05, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.05, "book": "DEFAULT"}
+        best_home = {"odds": 1.75, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
     
     for book_name, odds_dict in bookmakers:
         odds = odds_dict.get(key_forward, odds_dict.get(key_reverse, {}))
