@@ -747,7 +747,7 @@ def get_live_matches_nhl() -> list:
         return []
 
 def get_live_matches_mlb() -> list:
-    """Récupère les matchs MLB en direct (ESPN API)"""
+    """Récupère les matchs MLB en direct (ESPN API) - Seulement aujourd'hui et demain"""
     global MATCHES_CACHE_MLB, MATCHES_CACHE_TIME
     
     if MATCHES_CACHE_MLB and MATCHES_CACHE_TIME:
@@ -758,7 +758,8 @@ def get_live_matches_mlb() -> list:
     try:
         today = datetime.datetime.now()
         
-        for day_offset in range(7):
+        # Cherche seulement aujourd'hui et demain (max 2 jours)
+        for day_offset in range(2):
             search_date = today + datetime.timedelta(days=day_offset)
             date_str = search_date.strftime("%Y%m%d")
             
@@ -775,6 +776,7 @@ def get_live_matches_mlb() -> list:
                         competitors = comp.get('competitors', [])
                         status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
                         
+                        # Exclure seulement les matchs TERMINÉS, garder "scheduled" et "live"
                         blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
                         if not any(word in status_desc for word in blocked_statuses):
                             if len(competitors) >= 2:
@@ -786,13 +788,20 @@ def get_live_matches_mlb() -> list:
                     except Exception:
                         continue
                 
-                if daily_matches:
+                # Si c'est AUJOURD'HUI et il y a des matchs, les retourner immédiatement
+                if daily_matches and day_offset == 0:
+                    MATCHES_CACHE_MLB = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    return daily_matches
+                
+                # Si c'est DEMAIN et aucun match aujourd'hui, retourner ceux de demain
+                if daily_matches and day_offset == 1:
                     MATCHES_CACHE_MLB = daily_matches
                     MATCHES_CACHE_TIME = datetime.datetime.now()
                     return daily_matches
         
-        # Aucun match réel trouvé — ne jamais utiliser de faux matchs
-        logger.info("ℹ️ Aucun match MLB dans les 7 prochains jours (hors saison)")
+        # Aucun match trouvé aujourd'hui ni demain
+        logger.info("ℹ️ Aucun match MLB aujourd'hui ou demain")
         MATCHES_CACHE_MLB = []
         MATCHES_CACHE_TIME = datetime.datetime.now()
         return []
