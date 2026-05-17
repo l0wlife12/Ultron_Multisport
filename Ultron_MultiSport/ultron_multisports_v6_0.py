@@ -2690,6 +2690,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
     msg += "/pronostics mlb - Prédictions MLB ⚾\n\n"
+    msg += "PARLAYS (Combinaisons multiiples):\n"
+    msg += "/parlays - Auto-suggestions de parlays 🎯\n"
+    msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
     msg += "COMMANDES PLAYER PROPS:\n"
     msg += "/daily_props - Props de TOUS les matchs du jour 🔥\n"
     msg += "/props_match [équipe1] vs [équipe2] - Props du match\n"
@@ -3903,6 +3906,158 @@ async def cmd_analyse(update, context):
         await update.message.reply_text(f"❌ Erreur analyse: {e}")
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# PARLAYS — Combinaisons intelligentes de picks multiples
+# ═════════════════════════════════════════════════════════════════════════════
+
+def analyze_and_suggest_parlays(max_suggestions: int = 5) -> list:
+    """
+    Analyse les prédictions actuelles de tous les sports.
+    Retourne list de dicts: {picks_list, combined_odds, combined_confidence, sports, profit_pct, matchups}
+    """
+    from itertools import combinations
+    
+    try:
+        # Récupère tous les matchs + prédictions actuels
+        nba_matches = get_live_matches_nba()
+        nhl_matches = get_live_matches_nhl()
+        mlb_matches = get_live_matches_mlb()
+        
+        all_preds = []
+        
+        for away, home in nba_matches:
+            pred = generate_prediction_nba(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "NBA",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        for away, home in nhl_matches:
+            pred = generate_prediction_nhl(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "NHL",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        for away, home in mlb_matches:
+            pred = generate_prediction_mlb(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "MLB",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        if len(all_preds) < 2:
+            return []
+        
+        # Génère combinaisons de 2-4 picks sans doublons de matchup
+        parlays_list = []
+        
+        for combo_size in [2, 3, 4]:
+            if len(all_preds) < combo_size:
+                continue
+                
+            for combo in combinations(all_preds, combo_size):
+                # Vérifie pas deux picks du MÊME match
+                matchups = [p["matchup"] for p in combo]
+                if len(matchups) != len(set(matchups)):
+                    continue
+                
+                # Calcule cotes combinées et confiance
+                combined_odds = 1.0
+                combined_conf = 0.0
+                combined_ev = 0.0
+                sports_list = list(set(p["sport"] for p in combo))
+                
+                for pred in combo:
+                    combined_odds *= pred["odds"]
+                    combined_conf += pred["confidence"]
+                    combined_ev += pred["ev"]
+                
+                # Moyenne de confiance
+                combined_conf = int(combined_conf / len(combo))
+                
+                # Calcul profit potentiel pour 1$ de stake
+                profit_pct = (combined_odds - 1.0) * 100
+                
+                parlays_list.append({
+                    "picks": combo,
+                    "combined_odds": combined_odds,
+                    "combined_confidence": combined_conf,
+                    "combined_ev": combined_ev,
+                    "sports": ",".join(sports_list),
+                    "profit_pct": profit_pct
+                })
+        
+        # Trie par EV (descending) puis confiance
+        parlays_list.sort(key=lambda x: (x["combined_ev"], x["combined_confidence"]), reverse=True)
+        
+        return parlays_list[:max_suggestions]
+    
+    except Exception as e:
+        logger.error(f"❌ analyze_and_suggest_parlays: {e}")
+        return []
+
+
+async def auto_parlays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les parlays automatiquement suggérés"""
+    try:
+        parlays = analyze_and_suggest_parlays(max_suggestions=5)
+        
+        if not parlays:
+            await update.message.reply_text("❌ Aucun parlay suggéré (besoin de 2+ BUY picks d'autres matchs)")
+            return
+        
+        msg = "🎯 ULTRON — AUTO PARLAYS SUGGÉRÉS\n"
+        msg += "═" * 70 + "\n\n"
+        
+        for i, parlay in enumerate(parlays, 1):
+            picks = parlay["picks"]
+            odds = parlay["combined_odds"]
+            conf = parlay["combined_confidence"]
+            profit = parlay["profit_pct"]
+            sports = parlay["sports"]
+            
+            msg += f"{i}️⃣ PARLAY {len(picks)}-WAY — {sports}\n"
+            msg += f"   Confiance: {conf}% | Cotes: {odds:.2f} | Profit $: ${profit:.2f} pour 1$\n"
+            msg += "   Matchs inclus:\n"
+            
+            for j, pred in enumerate(picks, 1):
+                msg += f"      {j}. {pred['matchup']}\n"
+                msg += f"         {pred['pick']} @ {pred['odds']:.2f}\n"
+            
+            msg += "\n"
+        
+        msg += "═" * 70 + "\n"
+        msg += "💡 Copie-colle les combos ci-dessus sur DraftKings ou ta plateforme préférée!"
+        
+        await update.message.reply_text(msg)
+    
+    except Exception as e:
+        logger.error(f"❌ auto_parlays_cmd: {e}")
+        await update.message.reply_text(f"❌ Erreur parlays: {e}")
+
+
 def main():
     """Démarre le bot Telegram avec toutes les automations"""
     
@@ -3932,6 +4087,7 @@ def main():
     app.add_handler(CommandHandler("nhl", nhl_matches))
     app.add_handler(CommandHandler("mlb", mlb_matches))
     app.add_handler(CommandHandler("pronostics", pronostics))
+    app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
     app.add_handler(CommandHandler("player", player_props))
     app.add_handler(CommandHandler("props_match", match_props))
     app.add_handler(CommandHandler("all_props", all_props))
