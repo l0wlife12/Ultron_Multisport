@@ -4,6 +4,7 @@
 ULTRON MULTISPORTS v6.0 - NBA + NHL + MLB
 Real matchups with QUEBEC TIMEZONE + INTELLIGENT PREDICTIONS
 Multi-league sports betting analysis system
+VERSION_BUILD = "2026-05-17_MLB_FIX"
 """
 
 import os
