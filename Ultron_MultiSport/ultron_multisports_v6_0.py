@@ -2589,13 +2589,13 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erreur NHL: {e}")
 
 async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Affiche les pronostics NFL"""
+    """Affiche les pronostics MLB"""
     try:
-        matches = get_live_matches_nfl()
+        matches = get_live_matches_mlb()
         quebec_time = get_quebec_time()
         
         if not matches:
-            await update.message.reply_text("❌ Aucun match NFL actuel")
+            await update.message.reply_text("❌ Aucun match MLB actuel")
             return
         
         predictions = []
@@ -2608,7 +2608,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
         
         if not predictions:
-            await update.message.reply_text("⚠️ Impossible de générer les prédictions NFL")
+            await update.message.reply_text("⚠️ Impossible de générer les prédictions MLB")
             return
         
         buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
@@ -2616,10 +2616,10 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
         
         # Message 1
-        msg1 = "🏈 ULTRON v6.0 - PRÉDICTIONS NFL\n"
+        msg1 = "⚾ ULTRON v6.0 - PRÉDICTIONS MLB\n"
         msg1 += "═" * 70 + "\n"
         msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
-        msg1 += f"📡 {len(matches)} matchs NFL en direct | {len(predictions)} avec prédictions\n"
+        msg1 += f"📡 {len(matches)} matchs MLB en direct | {len(predictions)} avec prédictions\n"
         msg1 += "═" * 70 + "\n\n"
         
         if buy_picks:
@@ -2653,7 +2653,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg2)
     except Exception as e:
         logger.error(f"❌ pronostics_mlb: {e}")
-        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+        await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche l'aide"""
@@ -2661,11 +2661,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "COMMANDES MATCHS (Équipes en direct):\n"
     msg += "/nba - Équipes NBA 🏀\n"
     msg += "/nhl - Équipes NHL 🏒\n"
-    msg += "/nfl - Équipes NFL 🏈\n\n"
+    msg += "/mlb - Équipes MLB ⚾\n\n"
     msg += "COMMANDES PRONOSTICS:\n"
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
-    msg += "/pronostics nfl - Prédictions NFL 🏈\n\n"
+    msg += "/pronostics mlb - Prédictions MLB ⚾\n\n"
     msg += "COMMANDES PLAYER PROPS:\n"
     msg += "/daily_props - Props de TOUS les matchs du jour 🔥\n"
     msg += "/props_match [équipe1] vs [équipe2] - Props du match\n"
@@ -3906,7 +3906,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
-    app.add_handler(CommandHandler("nfl", nfl_matches))
+    app.add_handler(CommandHandler("mlb", mlb_matches))
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("player", player_props))
     app.add_handler(CommandHandler("props_match", match_props))
