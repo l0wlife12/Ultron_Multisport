@@ -3104,7 +3104,10 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Suivi des matchs déjà notifiés (évite les doublons)
 _notified_starts = set()
-_notified_pronostics = set()
+# Set global des picks envoyés en session (évite redondance)
+# Format: {f"prono_{date}_{sport}_{away}_{home}": timestamp}
+_notified_pronostics = {}
+PRONO_RENOTIFY_HOURS = 24  # Ne renvoyer le même pick que après 24h
 
 MOTIVATION_MESSAGES = [
     "🔥 Every expert was once a beginner. Trust the process, trust the data.",
@@ -3400,8 +3403,21 @@ async def auto_send_pronostics(context):
                             away = competitors[0].get('team', {}).get('displayName', '?')
                             home = competitors[1].get('team', {}).get('displayName', '?')
                             notify_key = f"prono_{date_key}_{sport_key}_{away}_{home}"
+                            
+                            # Vérifier si ce pick a déjà été envoyé (anti-redondance 24h)
+                            should_send = False
                             if notify_key not in _notified_pronostics:
-                                _notified_pronostics.add(notify_key)
+                                should_send = True
+                            else:
+                                last_sent = _notified_pronostics[notify_key]
+                                elapsed_hours = (datetime.datetime.now() - last_sent).total_seconds() / 3600
+                                if elapsed_hours >= PRONO_RENOTIFY_HOURS:
+                                    should_send = True
+                                else:
+                                    logger.debug(f"⏭️  Déjà notifié récemment [{sport_key}]: {away} @ {home} (renvoie dans {PRONO_RENOTIFY_HOURS - elapsed_hours:.1f}h)")
+                            
+                            if should_send:
+                                _notified_pronostics[notify_key] = datetime.datetime.now()
                                 upcoming_matches.append((sport_key, emoji, away, home, utc_dt, is_live))
                                 logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min")
                             else:
