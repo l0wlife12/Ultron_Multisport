@@ -84,7 +84,7 @@ _db_init()
 SPORT_PATHS = {
     "NBA": "basketball/nba",
     "NHL": "hockey/nhl",
-    "NFL": "football/nfl",
+    "MLB": "baseball/mlb",
 }
 
 
@@ -431,7 +431,7 @@ def format_today_recap() -> str:
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
     for p in today_ps:
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(p["sport"], "🎯")
+        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
         if p["result"] == "WIN":
             res_icon = "✅"
         elif p["result"] == "LOSS":
@@ -517,7 +517,7 @@ def format_daily_report(days: int = 7) -> str:
         msg += "\n🕐  DERNIERS RÉSULTATS\n"
         for p in reversed(graded):
             icon  = "✅" if p["result"] == "WIN" else "❌"
-            sport_e = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(p["sport"], "🎯")
+            sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
             msg  += f"\n  {icon}  {sport_e}  {p['pick_type']} — {p['pick_team']}  @ {p['odds']}\n"
             if p.get("score"):
                 msg += f"       {p['score']}\n"
@@ -696,7 +696,7 @@ def format_result_notification(updated_picks: list) -> str:
 
     for p in updated_picks:
         icon    = "✅" if p["result"] == "WIN" else "❌"
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "NFL": "🏈"}.get(p["sport"], "🎯")
+        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
         msg    += f"{icon}  {sport_e}  {p['pick_type']} — {p['pick_team']}\n"
         msg    += f"     Cote  {p['odds']}  •  conf. {p['confidence']}%\n"
         if p.get("score"):

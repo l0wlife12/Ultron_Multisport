@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ULTRON MULTISPORTS v6.0 - NBA + NHL + NFL
+ULTRON MULTISPORTS v6.0 - NBA + NHL + MLB
 Real matchups with QUEBEC TIMEZONE + INTELLIGENT PREDICTIONS
 Multi-league sports betting analysis system
 """
@@ -159,7 +159,7 @@ else:
 # Cache des matchs par sport
 MATCHES_CACHE_NBA = []
 MATCHES_CACHE_NHL = []
-MATCHES_CACHE_NFL = []
+MATCHES_CACHE_MLB = []
 MATCHES_CACHE_TIME = None
 
 # Cache Odds API — une requête toutes les 4h par sport, seulement avant les matchs
@@ -168,7 +168,7 @@ _ODDS_API_CACHE_TTL = 14400  # 4 heures
 _ODDS_API_SPORT_KEYS = {
     "nba": "basketball_nba",
     "nhl": "icehockey_nhl",
-    "nfl": "americanfootball_nfl",
+    "mlb": "baseball_mlb",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -207,29 +207,39 @@ NHL_TEAM_STATS = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# NFL TEAMS STATS (2025-2026 Season) - Advanced Metrics
+# MLB TEAMS STATS (2025 Season) - Advanced Metrics
 # ═══════════════════════════════════════════════════════════════════════════
-NFL_TEAM_STATS = {
-    "chiefs": {"strength": 95, "pf": 28.2, "pa": 18.5, "wins": 12, "losses": 5, "gp": 17},
-    "49ers": {"strength": 93, "pf": 27.8, "pa": 19.2, "wins": 11, "losses": 6, "gp": 17},
-    "eagles": {"strength": 91, "pf": 27.1, "pa": 20.1, "wins": 10, "losses": 7, "gp": 17},
-    "ravens": {"strength": 89, "pf": 26.5, "pa": 21.2, "wins": 9, "losses": 8, "gp": 17},
-    "cowboys": {"strength": 87, "pf": 26.2, "pa": 21.8, "wins": 8, "losses": 9, "gp": 17},
-    "patriots": {"strength": 85, "pf": 25.8, "pa": 22.5, "wins": 7, "losses": 10, "gp": 17},
-    "bills": {"strength": 88, "pf": 26.8, "pa": 20.5, "wins": 9, "losses": 8, "gp": 17},
-    "dolphins": {"strength": 86, "pf": 26.1, "pa": 21.8, "wins": 8, "losses": 9, "gp": 17},
-    "packers": {"strength": 84, "pf": 25.5, "pa": 22.3, "wins": 7, "losses": 10, "gp": 17},
-    "lions": {"strength": 82, "pf": 25.2, "pa": 23.1, "wins": 6, "losses": 11, "gp": 17},
-    "buccaneers": {"strength": 80, "pf": 24.8, "pa": 24.2, "wins": 5, "losses": 12, "gp": 17},
-    "saints": {"strength": 78, "pf": 24.2, "pa": 25.1, "wins": 4, "losses": 13, "gp": 17},
-    "titans": {"strength": 76, "pf": 23.8, "pa": 25.8, "wins": 3, "losses": 14, "gp": 17},
-    "bengals": {"strength": 81, "pf": 25.5, "pa": 23.2, "wins": 7, "losses": 10, "gp": 17},
-    "texans": {"strength": 79, "pf": 24.9, "pa": 24.1, "wins": 6, "losses": 11, "gp": 17},
-    "colts": {"strength": 77, "pf": 24.1, "pa": 25.2, "wins": 4, "losses": 13, "gp": 17},
-    "chargers": {"strength": 83, "pf": 25.8, "pa": 23.5, "wins": 8, "losses": 9, "gp": 17},
-    "raiders": {"strength": 75, "pf": 23.5, "pa": 26.2, "wins": 3, "losses": 14, "gp": 17},
-    "broncos": {"strength": 80, "pf": 25.2, "pa": 24.3, "wins": 6, "losses": 11, "gp": 17},
-    "seahawks": {"strength": 78, "pf": 24.8, "pa": 25.1, "wins": 5, "losses": 12, "gp": 17},
+MLB_TEAM_STATS = {
+    "yankees": {"strength": 92, "r": 4.8, "ra": 3.2, "wins": 95, "losses": 67, "gp": 162},
+    "red_sox": {"strength": 88, "r": 4.6, "ra": 3.5, "wins": 91, "losses": 71, "gp": 162},
+    "astros": {"strength": 90, "r": 4.7, "ra": 3.3, "wins": 93, "losses": 69, "gp": 162},
+    "dodgers": {"strength": 89, "r": 4.5, "ra": 3.4, "wins": 92, "losses": 70, "gp": 162},
+    "braves": {"strength": 87, "r": 4.4, "ra": 3.6, "wins": 89, "losses": 73, "gp": 162},
+    "mets": {"strength": 85, "r": 4.3, "ra": 3.7, "wins": 87, "losses": 75, "gp": 162},
+    "cubs": {"strength": 84, "r": 4.2, "ra": 3.8, "wins": 85, "losses": 77, "gp": 162},
+    "cardinals": {"strength": 83, "r": 4.1, "ra": 3.9, "wins": 83, "losses": 79, "gp": 162},
+    "mariners": {"strength": 86, "r": 4.4, "ra": 3.5, "wins": 88, "losses": 74, "gp": 162},
+    "athletics": {"strength": 75, "r": 3.8, "ra": 4.2, "wins": 70, "losses": 92, "gp": 162},
+    "rangers": {"strength": 82, "r": 4.0, "ra": 4.0, "wins": 82, "losses": 80, "gp": 162},
+    "white_sox": {"strength": 74, "r": 3.7, "ra": 4.3, "wins": 68, "losses": 94, "gp": 162},
+    "twins": {"strength": 80, "r": 3.9, "ra": 4.1, "wins": 80, "losses": 82, "gp": 162},
+    "royals": {"strength": 78, "r": 3.8, "ra": 4.2, "wins": 77, "losses": 85, "gp": 162},
+    "tigers": {"strength": 76, "r": 3.7, "ra": 4.3, "wins": 72, "losses": 90, "gp": 162},
+    "orioles": {"strength": 81, "r": 4.0, "ra": 4.0, "wins": 81, "losses": 81, "gp": 162},
+    "rays": {"strength": 79, "r": 3.9, "ra": 4.1, "wins": 78, "losses": 84, "gp": 162},
+    "blue_jays": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
+    "guardians": {"strength": 83, "r": 4.1, "ra": 3.9, "wins": 84, "losses": 78, "gp": 162},
+    "rockies": {"strength": 76, "r": 3.7, "ra": 4.3, "wins": 73, "losses": 89, "gp": 162},
+    "nationals": {"strength": 72, "r": 3.6, "ra": 4.4, "wins": 65, "losses": 97, "gp": 162},
+    "marlins": {"strength": 73, "r": 3.6, "ra": 4.3, "wins": 67, "losses": 95, "gp": 162},
+    "diamondbacks": {"strength": 79, "r": 3.9, "ra": 4.1, "wins": 78, "losses": 84, "gp": 162},
+    "padres": {"strength": 80, "r": 4.0, "ra": 4.0, "wins": 79, "losses": 83, "gp": 162},
+    "giants": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 76, "losses": 86, "gp": 162},
+    "reds": {"strength": 75, "r": 3.7, "ra": 4.2, "wins": 71, "losses": 91, "gp": 162},
+    "brewers": {"strength": 86, "r": 4.4, "ra": 3.5, "wins": 88, "losses": 74, "gp": 162},
+    "pirates": {"strength": 71, "r": 3.5, "ra": 4.4, "wins": 63, "losses": 99, "gp": 162},
+    "phillies": {"strength": 88, "r": 4.6, "ra": 3.4, "wins": 90, "losses": 72, "gp": 162},
+    "angels": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -269,40 +279,39 @@ DRAFTKINGS_ODDS_NHL = {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-# FOOTBALL ODDS (BET365, BETFAIR, DRAFTKINGS)
+# BASEBALL ODDS (BET365, BETFAIR, DRAFTKINGS)
 # ═══════════════════════════════════════════════════════════════════════════
-BET365_ODDS_NFL = {
-    ("chiefs", "49ers"): {"away_ml": 1.95, "home_ml": 1.85, "spread": (3.5, 1.91, -3.5, 1.87), "total": 46.5, "under": 1.90, "over": 1.90},
-    ("eagles", "ravens"): {"away_ml": 2.20, "home_ml": 1.65, "spread": (-2.5, 1.93, 2.5, 1.85), "total": 44.0, "under": 1.91, "over": 1.89},
-    ("cowboys", "patriots"): {"away_ml": 1.72, "home_ml": 2.10, "spread": (4.0, 1.90, -4.0, 1.88), "total": 43.0, "under": 1.90, "over": 1.90},
-    ("bills", "dolphins"): {"away_ml": 1.85, "home_ml": 1.95, "spread": (0.0, 1.93, 0.0, 1.85), "total": 45.0, "under": 1.90, "over": 1.90},
-    ("packers", "lions"): {"away_ml": 2.15, "home_ml": 1.68, "spread": (-2.0, 1.94, 2.0, 1.84), "total": 44.5, "under": 1.91, "over": 1.89},
-    ("bengals", "texans"): {"away_ml": 1.90, "home_ml": 1.90, "spread": (1.5, 1.92, -1.5, 1.86), "total": 43.5, "under": 1.90, "over": 1.90},
-    ("chargers", "raiders"): {"away_ml": 1.75, "home_ml": 2.05, "spread": (3.5, 1.91, -3.5, 1.87), "total": 42.0, "under": 1.91, "over": 1.89},
-    ("broncos", "seahawks"): {"away_ml": 1.88, "home_ml": 1.92, "spread": (0.5, 1.93, -0.5, 1.85), "total": 41.5, "under": 1.90, "over": 1.90},
+BET365_ODDS_MLB = {
+    ("yankees", "red_sox"): {"away_ml": 1.82, "home_ml": 2.00, "total": 8.5, "under": 1.90, "over": 1.90},
+    ("astros", "rangers"): {"away_ml": 1.95, "home_ml": 1.85, "total": 8.0, "under": 1.91, "over": 1.89},
+    ("dodgers", "padres"): {"away_ml": 1.72, "home_ml": 2.10, "total": 7.5, "under": 1.90, "over": 1.90},
+    ("braves", "mets"): {"away_ml": 1.88, "home_ml": 1.92, "total": 8.0, "under": 1.91, "over": 1.89},
+    ("cubs", "cardinals"): {"away_ml": 1.85, "home_ml": 1.95, "total": 7.5, "under": 1.90, "over": 1.90},
+    ("brewers", "pirates"): {"away_ml": 1.75, "home_ml": 2.05, "total": 8.5, "under": 1.91, "over": 1.89},
+    ("mariners", "athletics"): {"away_ml": 2.15, "home_ml": 1.68, "total": 7.0, "under": 1.90, "over": 1.90},
+    ("phillies", "nationals"): {"away_ml": 1.78, "home_ml": 2.02, "total": 8.0, "under": 1.91, "over": 1.89},
 }
 
-BETFAIR_ODDS_NFL = {
-    ("chiefs", "49ers"): {"away_ml": 1.97, "home_ml": 1.83, "total": 46.5, "under": 1.89, "over": 1.91},
-    ("eagles", "ravens"): {"away_ml": 2.22, "home_ml": 1.63, "total": 44.0, "under": 1.90, "over": 1.90},
-    ("cowboys", "patriots"): {"away_ml": 1.74, "home_ml": 2.08, "total": 43.0, "under": 1.90, "over": 1.90},
-    ("bills", "dolphins"): {"away_ml": 1.87, "home_ml": 1.93, "total": 45.0, "under": 1.89, "over": 1.91},
-    ("packers", "lions"): {"away_ml": 2.17, "home_ml": 1.66, "total": 44.5, "under": 1.90, "over": 1.90},
-    ("bengals", "texans"): {"away_ml": 1.92, "home_ml": 1.88, "total": 43.5, "under": 1.89, "over": 1.91},
-    ("chargers", "raiders"): {"away_ml": 1.77, "home_ml": 2.03, "total": 42.0, "under": 1.90, "over": 1.90},
-    ("broncos", "seahawks"): {"away_ml": 1.90, "home_ml": 1.90, "total": 41.5, "under": 1.89, "over": 1.91},
+BETFAIR_ODDS_MLB = {
+    ("yankees", "red_sox"): {"away_ml": 1.84, "home_ml": 1.98, "total": 8.5, "under": 1.89, "over": 1.91},
+    ("astros", "rangers"): {"away_ml": 1.97, "home_ml": 1.83, "total": 8.0, "under": 1.90, "over": 1.90},
+    ("dodgers", "padres"): {"away_ml": 1.74, "home_ml": 2.08, "total": 7.5, "under": 1.89, "over": 1.91},
+    ("braves", "mets"): {"away_ml": 1.90, "home_ml": 1.90, "total": 8.0, "under": 1.89, "over": 1.91},
+    ("cubs", "cardinals"): {"away_ml": 1.87, "home_ml": 1.93, "total": 7.5, "under": 1.89, "over": 1.91},
+    ("brewers", "pirates"): {"away_ml": 1.77, "home_ml": 2.03, "total": 8.5, "under": 1.90, "over": 1.90},
+    ("mariners", "athletics"): {"away_ml": 2.17, "home_ml": 1.66, "total": 7.0, "under": 1.89, "over": 1.91},
+    ("phillies", "nationals"): {"away_ml": 1.80, "home_ml": 2.00, "total": 8.0, "under": 1.89, "over": 1.91},
 }
 
-DRAFTKINGS_ODDS_NFL = {
-    ("chiefs", "49ers"): {"away_ml": 1.98, "home_ml": 1.82, "total": 46.5, "under": 1.88, "over": 1.92},
-    ("eagles", "ravens"): {"away_ml": 2.25, "home_ml": 1.60, "total": 44.0, "under": 1.88, "over": 1.92},
-    ("cowboys", "patriots"): {"away_ml": 1.76, "home_ml": 2.06, "total": 43.0, "under": 1.88, "over": 1.92},
-    ("bills", "dolphins"): {"away_ml": 1.88, "home_ml": 1.92, "total": 45.0, "under": 1.88, "over": 1.92},
-    ("packers", "lions"): {"away_ml": 2.20, "home_ml": 1.64, "total": 44.5, "under": 1.88, "over": 1.92},
-    ("bengals", "texans"): {"away_ml": 1.95, "home_ml": 1.85, "total": 43.5, "under": 1.88, "over": 1.92},
-    ("chargers", "raiders"): {"away_ml": 1.80, "home_ml": 2.00, "total": 42.0, "under": 1.88, "over": 1.92},
-    ("broncos", "seahawks"): {"away_ml": 1.92, "home_ml": 1.88, "total": 41.5, "under": 1.88, "over": 1.92},
-}
+DRAFTKINGS_ODDS_MLB = {
+    ("yankees", "red_sox"): {"away_ml": 1.86, "home_ml": 1.96, "total": 8.5, "under": 1.88, "over": 1.92},
+    ("astros", "rangers"): {"away_ml": 1.98, "home_ml": 1.82, "total": 8.0, "under": 1.88, "over": 1.92},
+    ("dodgers", "padres"): {"away_ml": 1.76, "home_ml": 2.06, "total": 7.5, "under": 1.88, "over": 1.92},
+    ("braves", "mets"): {"away_ml": 1.92, "home_ml": 1.88, "total": 8.0, "under": 1.88, "over": 1.92},
+    ("cubs", "cardinals"): {"away_ml": 1.89, "home_ml": 1.91, "total": 7.5, "under": 1.88, "over": 1.92},
+    ("brewers", "pirates"): {"away_ml": 1.79, "home_ml": 2.01, "total": 8.5, "under": 1.88, "over": 1.92},
+    ("mariners", "athletics"): {"away_ml": 2.20, "home_ml": 1.64, "total": 7.0, "under": 1.88, "over": 1.92},
+    ("phillies", "nationals"): {"away_ml": 1.82, "home_ml": 1.98, "total": 8.0, "under": 1.88, "over": 1.92},
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NBA TEAMS STATS (2025-2026 Season) - Advanced Metrics
@@ -481,7 +490,7 @@ _TEAM_STATS_TTL_SECONDS = 7 * 24 * 3600  # 7 jours
 _TEAM_STAT_KEYS = {
     'NBA': ('ppg', 'pa', 200),
     'NHL': ('gf',  'ga',  10),
-    'NFL': ('pf',  'pa',  40),
+    'MLB': ('r',  'ra',  10),
 }
 
 
@@ -497,7 +506,7 @@ def get_dynamic_team_stats(sport: str) -> dict:
     if cached_time and (now - cached_time).total_seconds() < _TEAM_STATS_TTL_SECONDS:
         return _TEAM_STATS_CACHE[sport]
 
-    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'NFL': NFL_TEAM_STATS}.get(sport, {})
+    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'MLB': MLB_TEAM_STATS}.get(sport, {})
     if not ESPN_CONTEXT_AVAILABLE:
         return base
 
@@ -506,7 +515,7 @@ def get_dynamic_team_stats(sport: str) -> dict:
         if not espn_data:
             return base
 
-        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'NFL': find_team_nfl}.get(sport)
+        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'MLB': find_team_mlb}.get(sport)
         off_key, def_key, threshold = _TEAM_STAT_KEYS.get(sport, ('ppg', 'pa', 200))
 
         live = {}
@@ -735,14 +744,14 @@ def get_live_matches_nhl() -> list:
         logger.error(f"❌ Erreur NHL: {e}")
         return []
 
-def get_live_matches_nfl() -> list:
-    """Récupère les matchs NFL en direct (ESPN API)"""
-    global MATCHES_CACHE_NFL, MATCHES_CACHE_TIME
+def get_live_matches_mlb() -> list:
+    """Récupère les matchs MLB en direct (ESPN API)"""
+    global MATCHES_CACHE_MLB, MATCHES_CACHE_TIME
     
-    if MATCHES_CACHE_NFL and MATCHES_CACHE_TIME:
+    if MATCHES_CACHE_MLB and MATCHES_CACHE_TIME:
         elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
         if elapsed < 120:
-            return MATCHES_CACHE_NFL
+            return MATCHES_CACHE_MLB
     
     try:
         today = datetime.datetime.now()
@@ -751,7 +760,7 @@ def get_live_matches_nfl() -> list:
             search_date = today + datetime.timedelta(days=day_offset)
             date_str = search_date.strftime("%Y%m%d")
             
-            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={date_str}"
+            url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={date_str}"
             resp = requests.get(url, timeout=10)
             
             if resp.status_code == 200:
@@ -776,18 +785,18 @@ def get_live_matches_nfl() -> list:
                         continue
                 
                 if daily_matches:
-                    MATCHES_CACHE_NFL = daily_matches
+                    MATCHES_CACHE_MLB = daily_matches
                     MATCHES_CACHE_TIME = datetime.datetime.now()
                     return daily_matches
         
         # Aucun match réel trouvé — ne jamais utiliser de faux matchs
-        logger.info("ℹ️ Aucun match NFL dans les 7 prochains jours (hors saison)")
-        MATCHES_CACHE_NFL = []
+        logger.info("ℹ️ Aucun match MLB dans les 7 prochains jours (hors saison)")
+        MATCHES_CACHE_MLB = []
         MATCHES_CACHE_TIME = datetime.datetime.now()
         return []
     
     except Exception as e:
-        logger.error(f"❌ Erreur NFL: {e}")
+        logger.error(f"❌ Erreur MLB: {e}")
         return []
 
 def get_live_matches_nba() -> list:
@@ -906,32 +915,42 @@ def find_team_nhl(name_input: str) -> str | None:
     logger.warning(f"⚠️ Équipe NHL non trouvée: {name_input}")
     return None
 
-def find_team_nfl(name_input: str) -> str | None:
-    """Trouve une équipe NFL par son nom - avec table de correspondance"""
+def find_team_mlb(name_input: str) -> str | None:
+    """Trouve une équipe MLB par son nom - avec table de correspondance"""
     name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
     
     # Table de correspondance explicite pour ESPN
     team_aliases = {
-        "chiefs": ["kansas_city_chiefs", "chiefs"],
-        "49ers": ["san_francisco_49ers", "san_francisco_niners", "49ers"],
-        "eagles": ["philadelphia_eagles", "eagles"],
-        "ravens": ["baltimore_ravens", "ravens"],
-        "cowboys": ["dallas_cowboys", "cowboys"],
-        "patriots": ["new_england_patriots", "patriots"],
-        "bills": ["buffalo_bills", "bills"],
-        "dolphins": ["miami_dolphins", "dolphins"],
-        "packers": ["green_bay_packers", "packers"],
-        "lions": ["detroit_lions", "lions"],
-        "buccaneers": ["tampa_bay_buccaneers", "buccaneers"],
-        "saints": ["new_orleans_saints", "saints"],
-        "titans": ["tennessee_titans", "titans"],
-        "bengals": ["cincinnati_bengals", "bengals"],
-        "texans": ["houston_texans", "texans"],
-        "colts": ["indianapolis_colts", "colts"],
-        "chargers": ["los_angeles_chargers", "chargers"],
-        "raiders": ["las_vegas_raiders", "vegas_raiders", "raiders"],
-        "broncos": ["denver_broncos", "broncos"],
-        "seahawks": ["seattle_seahawks", "seahawks"],
+        "yankees": ["new_york_yankees", "yankees"],
+        "red_sox": ["boston_red_sox", "red_sox"],
+        "astros": ["houston_astros", "astros"],
+        "dodgers": ["los_angeles_dodgers", "dodgers"],
+        "braves": ["atlanta_braves", "braves"],
+        "mets": ["new_york_mets", "mets"],
+        "cubs": ["chicago_cubs", "cubs"],
+        "cardinals": ["st._louis_cardinals", "cardinals"],
+        "mariners": ["seattle_mariners", "mariners"],
+        "athletics": ["oakland_athletics", "athletics"],
+        "rangers": ["texas_rangers", "rangers"],
+        "white_sox": ["chicago_white_sox", "white_sox"],
+        "twins": ["minnesota_twins", "twins"],
+        "royals": ["kansas_city_royals", "royals"],
+        "tigers": ["detroit_tigers", "tigers"],
+        "orioles": ["baltimore_orioles", "orioles"],
+        "rays": ["tampa_bay_rays", "rays"],
+        "blue_jays": ["toronto_blue_jays", "blue_jays"],
+        "guardians": ["cleveland_guardians", "guardians"],
+        "rockies": ["colorado_rockies", "rockies"],
+        "nationals": ["washington_nationals", "nationals"],
+        "marlins": ["miami_marlins", "marlins"],
+        "diamondbacks": ["arizona_diamondbacks", "diamondbacks"],
+        "padres": ["san_diego_padres", "padres"],
+        "giants": ["san_francisco_giants", "giants"],
+        "reds": ["cincinnati_reds", "reds"],
+        "brewers": ["milwaukee_brewers", "brewers"],
+        "pirates": ["pittsburgh_pirates", "pirates"],
+        "phillies": ["philadelphia_phillies", "phillies"],
+        "angels": ["los_angeles_angels", "angels"],
     }
     
     # Chercher dans les aliases
@@ -941,11 +960,11 @@ def find_team_nfl(name_input: str) -> str | None:
                 return team_key
     
     # Fallback sur la recherche dans le dictionnaire
-    for team_key in NFL_TEAM_STATS.keys():
+    for team_key in MLB_TEAM_STATS.keys():
         if team_key in name_clean or name_clean in team_key:
             return team_key
     
-    logger.warning(f"⚠️ Équipe NFL non trouvée: {name_input}")
+    logger.warning(f"⚠️ Équipe MLB non trouvée: {name_input}")
     return None
 
 def find_team_nba(name_input: str) -> str | None:
@@ -1040,18 +1059,18 @@ def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
         "home_book": best_home["book"],
     }
 
-def get_best_odds_nfl(away_team: str, home_team: str) -> dict:
-    """LINE SHOPPING pour NFL"""
-    away_clean = find_team_nfl(away_team) or away_team.lower()
-    home_clean = find_team_nfl(home_team) or home_team.lower()
+def get_best_odds_mlb(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour MLB"""
+    away_clean = find_team_mlb(away_team) or away_team.lower()
+    home_clean = find_team_mlb(home_team) or home_team.lower()
     
     key_forward = (away_clean, home_clean)
     key_reverse = (home_clean, away_clean)
     
     bookmakers = [
-        ("BET365", BET365_ODDS_NFL),
-        ("BETFAIR", BETFAIR_ODDS_NFL),
-        ("DRAFTKINGS", DRAFTKINGS_ODDS_NFL),
+        ("BET365", BET365_ODDS_MLB),
+        ("BETFAIR", BETFAIR_ODDS_MLB),
+        ("DRAFTKINGS", DRAFTKINGS_ODDS_MLB),
     ]
     
     best_away = {"odds": 1.0, "book": "N/A"}
@@ -1395,44 +1414,44 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         "ou_confidence": ou_conf,
     }
 
-def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
-    """Génère une prédiction pour un match NFL"""
-    away_clean = find_team_nfl(away_team) or away_team.lower()
-    home_clean = find_team_nfl(home_team) or home_team.lower()
+def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction pour un match MLB"""
+    away_clean = find_team_mlb(away_team) or away_team.lower()
+    home_clean = find_team_mlb(home_team) or home_team.lower()
     
-    _nfl_ts = get_dynamic_team_stats('NFL')
-    away_stats = _nfl_ts.get(away_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
-    home_stats = _nfl_ts.get(home_clean, {"strength": 80, "pf": 25.0, "pa": 23.0, "wins": 8, "losses": 9})
+    _mlb_ts = get_dynamic_team_stats('MLB')
+    away_stats = _mlb_ts.get(away_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
+    home_stats = _mlb_ts.get(home_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
     
-    odds_data = get_best_odds_nfl(away_clean, home_clean)
+    odds_data = get_best_odds_mlb(away_clean, home_clean)
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
     
-    # Calcul du modèle 4-facteurs pour le football
-    away_pf_diff = away_stats["pf"] - home_stats["pa"]
-    home_pf_diff = home_stats["pf"] - away_stats["pa"]
+    # Calcul du modèle pour le baseball (runs vs ERA concept)
+    away_r_diff = away_stats["r"] - home_stats["ra"]
+    home_r_diff = home_stats["r"] - away_stats["ra"]
     
-    point_diff = away_pf_diff - home_pf_diff - 2.5  # Avantage route
+    run_diff = away_r_diff - home_r_diff - 0.3  # Avantage route minimal
     
     try:
-        win_prob_away = 1 / (1 + math.exp(-point_diff / 14.0))
+        win_prob_away = 1 / (1 + math.exp(-run_diff / 1.8))
     except Exception:
-        win_prob_away = 0.5 + (point_diff / 80.0)
+        win_prob_away = 0.5 + (run_diff / 8.0)
     
     win_prob_away = max(0.05, min(0.95, win_prob_away))
     
     # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
-    _adj_nfl      = get_model_adjustments("NFL")
-    _model_w_nfl  = _adj_nfl.get("model_weight", 0.50)
-    _conf_cal_nfl = _adj_nfl.get("confidence_scale", 1.0)
-    _home_d_nfl   = _adj_nfl.get("home_advantage_delta", 0.0)
-    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_nfl))
+    _adj_mlb      = get_model_adjustments("MLB")
+    _model_w_mlb  = _adj_mlb.get("model_weight", 0.50)
+    _conf_cal_mlb = _adj_mlb.get("confidence_scale", 1.0)
+    _home_d_mlb   = _adj_mlb.get("home_advantage_delta", 0.0)
+    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_mlb))
 
     # Consensus du marché
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     
-    blended_prob = (_model_w_nfl * win_prob_away) + ((1.0 - _model_w_nfl) * market_consensus_away)
+    blended_prob = (_model_w_mlb * win_prob_away) + ((1.0 - _model_w_mlb) * market_consensus_away)
     blended_prob = max(0.05, min(0.95, blended_prob))
     
     # EV calculation
@@ -1442,13 +1461,13 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     if ev_away > ev_home:
         pick = f"{away_team.upper()} ML"
         odds = best_away_ml
-        confidence = int(min(97, max(50, blended_prob * 100 * _conf_cal_nfl)))
+        confidence = int(min(97, max(50, blended_prob * 100 * _conf_cal_mlb)))
         ev = ev_away
         book = odds_data["away_book"]
     else:
         pick = f"{home_team.upper()} ML"
         odds = best_home_ml
-        confidence = int(min(97, max(50, (1.0 - blended_prob) * 100 * _conf_cal_nfl)))
+        confidence = int(min(97, max(50, (1.0 - blended_prob) * 100 * _conf_cal_mlb)))
         ev = ev_home
         book = odds_data["home_book"]
     
@@ -1459,29 +1478,28 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     else:
         status = "⏸ PASS"
 
-    # ━━ SPREAD ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    # point_diff > 0 → away favori
-    raw_spread = round(point_diff * 2) / 2  # arrondir au 0.5 près
-    if raw_spread > 0:
-        spread_pick = f"{away_team.upper()} -{raw_spread}"
-        spread_conf = min(72, int(blended_prob * 100) + 5)
-    elif raw_spread < 0:
-        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
-        spread_conf = min(72, int((1.0 - blended_prob) * 100) + 5)
+    # ━━ RUNLINE (alternativé MLB pour le spread) ━━━━━━━━━━━━━━━━━━
+    run_diff_raw = run_diff * 2
+    if run_diff_raw > 0.5:
+        runline_pick = f"{away_team.upper()} -1.5"
+        runline_conf = min(70, int(blended_prob * 100) + 3)
+    elif run_diff_raw < -0.5:
+        runline_pick = f"{home_team.upper()} -1.5"
+        runline_conf = min(70, int((1.0 - blended_prob) * 100) + 3)
     else:
-        spread_pick = f"{home_team.upper()} PK"
-        spread_conf = 50
-    spread_odds = 1.909
+        runline_pick = f"{home_team.upper()} PK"
+        runline_conf = 50
+    runline_odds = 1.909
 
     # ━━ O/U (Total) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    projected_total = away_stats["pf"] + home_stats["pf"]
-    ou_line = 45.5  # ligne typique NFL
+    projected_total = away_stats["r"] + home_stats["r"]
+    ou_line = 8.5  # ligne typique MLB
     if projected_total > ou_line:
         ou_pick = f"OVER {ou_line}"
-        ou_conf = min(70, int(abs(projected_total - ou_line) * 3 + 50))
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 5 + 50))
     else:
         ou_pick = f"UNDER {ou_line}"
-        ou_conf = min(70, int(abs(projected_total - ou_line) * 3 + 50))
+        ou_conf = min(70, int(abs(projected_total - ou_line) * 5 + 50))
     ou_odds = 1.909
 
     return {
@@ -1497,10 +1515,10 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
         "ml_odds": f"{odds:.2f}",
         "ml_confidence": confidence,
         "ml_ev_pct": f"{ev*100:.2f}%",
-        # Spread
-        "spread_pick": spread_pick,
-        "spread_odds": f"{spread_odds:.2f}",
-        "spread_confidence": spread_conf,
+        # Runline
+        "spread_pick": runline_pick,
+        "spread_odds": f"{runline_odds:.2f}",
+        "spread_confidence": runline_conf,
         # O/U
         "ou_pick": ou_pick,
         "ou_odds": f"{ou_odds:.2f}",
@@ -2310,14 +2328,14 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menu principal"""
     msg = "🤖 ULTRON v6.0 - MULTISPORTS\n"
-    msg += "NBA 🏀 + NHL 🏒 + NFL 🏈\n\n"
+    msg += "NBA 🏀 + NHL 🏒 + MLB ⚾\n\n"
     msg += "🕐 Heure Québec | 🌍 ESPN Live Data\n"
     msg += "📊 3 Bookmakers | Line Shopping | Smart Filtering\n\n"
     msg += "COMMANDES:\n"
     msg += "/nba - Équipes NBA en direct\n"
     msg += "/nhl - Équipes NHL en direct\n"
-    msg += "/nfl - Équipes NFL en direct\n"
-    msg += "/pronostics <sport> - Pronostics (nba/nhl/nfl)\n"
+    msg += "/mlb - Équipes MLB en direct\n"
+    msg += "/pronostics <sport> - Pronostics (nba/nhl/mlb)\n"
     msg += "/help - Aide"
     await update.message.reply_text(msg)
 
@@ -2350,19 +2368,19 @@ async def nhl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ nhl_matches: {e}")
         await update.message.reply_text(f"❌ Erreur NHL: {e}")
 
-async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Affiche les équipes NFL en direct"""
+async def mlb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes MLB en direct"""
     try:
-        matches = get_live_matches_nfl()
+        matches = get_live_matches_mlb()
         quebec_time = get_quebec_time()
         
         if not matches:
-            msg = "❌ Aucun match NFL actif aujourd'hui\n"
+            msg = "❌ Aucun match MLB actif aujourd'hui\n"
             msg += "(Tous terminés ou pas de match programmé)"
             await update.message.reply_text(msg)
             return
         
-        msg = f"🏈 MATCHS NFL EN DIRECT\n"
+        msg = f"⚾ MATCHS MLB EN DIRECT\n"
         msg += "═" * 60 + "\n"
         msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
         msg += "═" * 60 + "\n\n"
@@ -2372,12 +2390,12 @@ async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         msg += "\n" + "═" * 60 + "\n"
         msg += f"📊 Total: {len(matches)} matchs en direct\n"
-        msg += "💡 Utilise /pronostics nfl pour les prédictions"
+        msg += "💡 Utilise /pronostics mlb pour les prédictions"
         
         await update.message.reply_text(msg)
     except Exception as e:
-        logger.error(f"❌ nfl_matches: {e}")
-        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+        logger.error(f"❌ mlb_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
 async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les équipes NBA en direct"""
@@ -2409,13 +2427,13 @@ async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erreur NBA: {e}")
 
 async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Affiche les pronostics pour un sport: /pronostics nha/nhl/nfl"""
+    """Affiche les pronostics pour un sport: /pronostics nba/nhl/mlb"""
     if not context.args:
         msg = "❌ Usage: /pronostics <sport>\n\n"
         msg += "Exemple:\n"
         msg += "/pronostics nba - Pronostics NBA\n"
         msg += "/pronostics nhl - Pronostics NHL 🏒\n"
-        msg += "/pronostics nfl - Pronostics NFL 🏈"
+        msg += "/pronostics mlb - Pronostics MLB ⚾"
         await update.message.reply_text(msg)
         return
     
@@ -2423,13 +2441,13 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if sport == "nhl":
         await pronostics_nhl(update, context)
-    elif sport == "nfl":
-        await pronostics_nfl(update, context)
+    elif sport == "mlb":
+        await pronostics_mlb(update, context)
     elif sport == "nba":
         await pronostics_nba(update, context)
     else:
         msg = f"❌ Sport '{sport}' non reconnu\n"
-        msg += "Sports disponibles: nba, nhl, nfl"
+        msg += "Sports disponibles: nba, nhl, mlb"
         await update.message.reply_text(msg)
 
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2570,7 +2588,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ pronostics_nhl: {e}")
         await update.message.reply_text(f"❌ Erreur NHL: {e}")
 
-async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les pronostics NFL"""
     try:
         matches = get_live_matches_nfl()
@@ -2583,7 +2601,7 @@ async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         predictions = []
         for away, home in matches:
             try:
-                pred = generate_prediction_nfl(away, home)
+                pred = generate_prediction_mlb(away, home)
                 predictions.append((away, home, pred))
             except Exception as e:
                 logger.warning(f"⚠️ Erreur prédiction {away} @ {home}: {e}")
@@ -2634,7 +2652,7 @@ async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(msg2)
     except Exception as e:
-        logger.error(f"❌ pronostics_nfl: {e}")
+        logger.error(f"❌ pronostics_mlb: {e}")
         await update.message.reply_text(f"❌ Erreur NFL: {e}")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2990,14 +3008,14 @@ def _build_picks_for_sport(sport: str):
                     })
             except Exception:
                 continue
-    elif sport == "nfl":
-        matches = get_live_matches_nfl()
+    elif sport == "mlb":
+        matches = get_live_matches_mlb()
         for away, home in matches:
             try:
-                pred = generate_prediction_nfl(away, home)
+                pred = generate_prediction_mlb(away, home)
                 if pred and pred.get('status', '') != 'PASS':
                     picks.append({
-                        "label": f"🏈 {away} @ {home}",
+                        "label": f"⚾ {away} @ {home}",
                         "pick": pred.get('pick', ''),
                         "odds": pred.get('odds', ''),
                         "confidence": pred.get('confidence', 0),
@@ -3029,7 +3047,7 @@ async def auto_daily_motivation(context):
     sports_config = [
         ("basketball/nba", "🏀 NBA"),
         ("hockey/nhl", "🏒 NHL"),
-        ("football/nfl", "🏈 NFL"),
+        ("baseball/mlb", "⚾ MLB"),
     ]
     total_matches = 0
     today = datetime.datetime.now().strftime("%Y%m%d")
@@ -3163,7 +3181,7 @@ async def auto_send_pronostics(context):
     sports_config = [
         ("basketball/nba", "nba", "🏀"),
         ("hockey/nhl", "nhl", "🏒"),
-        ("football/nfl", "nfl", "🏈"),
+        ("baseball/mlb", "mlb", "⚾"),
     ]
 
     upcoming_matches = []  # [(sport_key, emoji, away, home)]
@@ -3283,7 +3301,7 @@ async def auto_send_pronostics(context):
             elif sport_key == "nhl":
                 pred = generate_prediction_nhl(away, home)
             else:
-                pred = generate_prediction_nfl(away, home)
+                pred = generate_prediction_mlb(away, home)
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
@@ -3632,7 +3650,7 @@ async def auto_check_game_starts(context):
     sports_config = [
         ("basketball/nba", "🏀"),
         ("hockey/nhl", "🏒"),
-        ("football/nfl", "🏈"),
+        ("baseball/mlb", "⚾"),
     ]
 
     for sport_path, emoji in sports_config:
