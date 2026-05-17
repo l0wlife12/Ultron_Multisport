@@ -3577,7 +3577,7 @@ async def auto_send_pronostics(context):
     msg_free += "🏟️  " + free['label'].replace("⚡ EN COURS", "").strip() + "\n"
     msg_free += f"🕐  {free['heure']} (Québec)\n"
     msg_free += f"💵  Cote: {free['ml_odds']}\n"
-    msg_free += f"🔥  Confiance: {free['ml_confidence']}%\n"
+    msg_free += f"🔥  Confiance: {free['ml_confidence']}\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg_free += "💎 Parlays + autres picks en VIP ↑"
 
@@ -3601,15 +3601,15 @@ async def auto_send_pronostics(context):
             msg_vip += f"🕐  {p['heure']}  (heure Québec)\n\n"
             msg_vip += f"   📊  ML\n"
             msg_vip += f"        {p['ml_pick']}\n"
-            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_confidence']}%  •  {p['ml_status']}\n"
+            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_confidence']}  •  {p['ml_status']}\n"
             if p['spread_pick']:
                 msg_vip += f"\n   📏  SPREAD\n"
                 msg_vip += f"        {p['spread_pick']}\n"
-                msg_vip += f"        Cote {p['spread_odds']}  •  {p['spread_confidence']}%\n"
+                msg_vip += f"        Cote {p['spread_odds']}  •  {p['spread_confidence']}\n"
             if p['ou_pick']:
                 msg_vip += f"\n   🔢  TOTAL (O/U)\n"
                 msg_vip += f"        {p['ou_pick']}\n"
-                msg_vip += f"        Cote {p['ou_odds']}  •  {p['ou_confidence']}%\n"
+                msg_vip += f"        Cote {p['ou_odds']}  •  {p['ou_confidence']}\n"
             msg_vip += f"\n   💰  EV :  {p['ml_ev_pct']}\n"
             msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
         
