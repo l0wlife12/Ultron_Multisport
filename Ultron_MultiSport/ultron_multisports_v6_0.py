@@ -3381,13 +3381,13 @@ async def auto_send_pronostics(context):
 
                     minutes_until = (utc_dt - now_utc).total_seconds() / 60
 
-                    # is_live = match déjà commencé (heure passée) mais pas terminé.
-                    # On utilise minutes_until plutôt que le texte de statut ESPN
-                    # car NHL peut retourner "End of 1st Period", "Overtime", etc.
-                    is_live = minutes_until < 20
+                    # is_live = match qui a déjà commencé (heure passée)
+                    # On envoie les picks jusqu'à 120 min avant ET pendant le match (mais pas les finales)
+                    is_live = minutes_until < 0
 
-                    # Fenêtre d'envoi : dans les 120 min avant le match (exclut les matchs en cours)
-                    if not is_live and minutes_until <= 120:
+                    # Fenêtre d'envoi : dans les 120 min avant le match ET dans les 15 min après le début
+                    # Cela permet d'envoyer les picks même si le match a commencé mais pas encore fini
+                    if minutes_until <= 120 and (not is_live or minutes_until > -15):
                         comp = event.get('competitions', [{}])[0]
                         competitors = comp.get('competitors', [])
                         if len(competitors) >= 2:
