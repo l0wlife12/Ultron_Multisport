@@ -2641,9 +2641,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg1 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n"
-                msg1 += f"   📊 Bookmaker: {pred['bookmaker']} | Model: {pred['model']}\n\n"
+                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2656,8 +2654,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg2 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n\n"
+                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -2708,9 +2705,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg1 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n"
-                msg1 += f"   📊 Bookmaker: {pred['bookmaker']}\n\n"
+                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2723,8 +2718,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg2 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n\n"
+                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -2775,9 +2769,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg1 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n"
-                msg1 += f"   📊 Bookmaker: {pred['bookmaker']}\n\n"
+                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2790,8 +2782,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n"
-                msg2 += f"   🔥 Confiance: {pred['confidence']}% | EV: {pred['ev_pct']}\n\n"
+                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -3593,7 +3584,7 @@ async def auto_send_pronostics(context):
     msg_free += "🏟️  " + free['label'] + "\n"
     msg_free += f"🕐  {free['heure']} (Québec)\n"
     msg_free += f"💵  Cote: {free['ml_odds']}\n"
-    msg_free += f"🔥  Confiance: {free['ml_confidence']}\n"
+    msg_free += f"{free['ml_status']}\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg_free += "💎 Parlays + autres picks en VIP ↑"
 
@@ -3617,16 +3608,15 @@ async def auto_send_pronostics(context):
             msg_vip += f"🕐  {p['heure']}  (heure Québec)\n\n"
             msg_vip += f"   📊  ML\n"
             msg_vip += f"        {p['ml_pick']}\n"
-            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_confidence']}  •  {p['ml_status']}\n"
+            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_status']}\n"
             if p['spread_pick']:
                 msg_vip += f"\n   📏  SPREAD\n"
                 msg_vip += f"        {p['spread_pick']}\n"
-                msg_vip += f"        Cote {p['spread_odds']}  •  {p['spread_confidence']}\n"
+                msg_vip += f"        Cote {p['spread_odds']}\n"
             if p['ou_pick']:
                 msg_vip += f"\n   🔢  TOTAL (O/U)\n"
                 msg_vip += f"        {p['ou_pick']}\n"
-                msg_vip += f"        Cote {p['ou_odds']}  •  {p['ou_confidence']}\n"
-            msg_vip += f"\n   💰  EV :  {p['ml_ev_pct']}\n"
+                msg_vip += f"        Cote {p['ou_odds']}\n"
             msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
         
         # ── BONUS VIP: PARLAYS SUGGÉRÉS (pas dans le FREE) ──────────────
@@ -3638,9 +3628,8 @@ async def auto_send_pronostics(context):
             for i, parlay in enumerate(parlays, 1):
                 picks = parlay["picks"]
                 odds = parlay["combined_odds"]
-                conf = parlay["combined_confidence"]
                 msg_vip += f"\n{i}️⃣  PARLAY {len(picks)}-WAY\n"
-                msg_vip += f"   Cotes: {odds:.2f}  •  Confiance: {conf}%\n"
+                msg_vip += f"   Cotes: {odds:.2f}\n"
                 msg_vip += "   Picks:\n"
                 for pred in picks:
                     # Format ultra-compact
@@ -4224,7 +4213,7 @@ async def auto_parlays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sports = parlay["sports"]
             
             msg += f"{i}️⃣ PARLAY {len(picks)}-WAY — {sports}\n"
-            msg += f"   Confiance: {conf}% | Cotes: {odds:.2f} | Profit $: ${profit:.2f} pour 1$\n"
+            msg += f"   Cotes: {odds:.2f} | Profit $: ${profit:.2f} pour 1$\n"
             msg += "   Matchs inclus:\n"
             
             for j, pred in enumerate(picks, 1):
