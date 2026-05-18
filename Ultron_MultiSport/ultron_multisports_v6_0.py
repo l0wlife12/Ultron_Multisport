@@ -3618,7 +3618,7 @@ async def auto_send_pronostics(context):
                 msg_vip += f"        {status_emoji} {p['spread_pick']}\n"
                 msg_vip += f"        Cote {p['spread_odds']}\n"
             if p['ou_pick']:
-                msg_vip += f"\n   🔢  TOTAL (O/U)\n"
+                msg_vip += f"\n   🔢  TOTAL POINTS (O/U)\n"
                 msg_vip += f"        {status_emoji} {p['ou_pick']}\n"
                 msg_vip += f"        Cote {p['ou_odds']}\n"
             
