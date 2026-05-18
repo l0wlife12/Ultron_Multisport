@@ -1378,9 +1378,9 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         ev = ev_home
         book = odds_data["home_book"]
     
-    if ev > 0.01:
+    if ev > -0.005:
         status = "✅ BUY"
-    elif ev > 0.0:
+    elif ev > -0.02:
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
@@ -1619,9 +1619,9 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         ev = ev_home
         book = odds_data["home_book"]
     
-    if ev > 0.01:
+    if ev > -0.005:
         status = "✅ BUY"
-    elif ev > 0.0:
+    elif ev > -0.02:
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
@@ -2414,9 +2414,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         ev = ev_home
         book = odds_data["home_book"]
     
-    if ev > 0.01:
+    if ev > -0.005:
         status = "✅ BUY"
-    elif ev > 0.0:
+    elif ev > -0.02:
         status = "👀 MONITORING"
     else:
         status = "⏸ PASS"
