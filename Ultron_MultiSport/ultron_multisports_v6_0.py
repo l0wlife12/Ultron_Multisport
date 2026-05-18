@@ -3621,6 +3621,44 @@ async def auto_send_pronostics(context):
                 msg_vip += f"\n   🔢  TOTAL (O/U)\n"
                 msg_vip += f"        {status_emoji} {p['ou_pick']}\n"
                 msg_vip += f"        Cote {p['ou_odds']}\n"
+            
+            # ── Ajouter les TOP PROPS JOUEURS du match (si NBA) ──
+            if "🏀" in p['label']:
+                try:
+                    # Extraire les équipes du label
+                    label_clean = p['label'].split(" ", 1)[-1]  # Retire l'emoji
+                    teams = label_clean.split(" @ ")
+                    if len(teams) == 2:
+                        away_team, home_team = teams[0].strip(), teams[1].strip()
+                        
+                        # Résultats des props
+                        props_results = analyze_all_player_props(away_team, home_team)
+                        
+                        # Collecter tous les picks avec value
+                        all_props_picks = []
+                        if props_results['away_team']:
+                            for pick in props_results['away_team']:
+                                if pick['analysis']['side'] != 'none':
+                                    all_props_picks.append(pick)
+                        if props_results['home_team']:
+                            for pick in props_results['home_team']:
+                                if pick['analysis']['side'] != 'none':
+                                    all_props_picks.append(pick)
+                        
+                        # Afficher top 3 props
+                        if all_props_picks:
+                            all_props_picks.sort(key=lambda x: x['analysis']['value_margin'], reverse=True)
+                            msg_vip += f"\n   ⭐  PROPS JOUEURS (Top 3)\n"
+                            for j, prop_pick in enumerate(all_props_picks[:3], 1):
+                                player = prop_pick['player']
+                                analysis = prop_pick['analysis']
+                                side_text = 'OVER' if analysis['side'] == 'over' else 'UNDER'
+                                prop_emoji = "🟢" if analysis['value_margin'] > 3 else "🟡"
+                                msg_vip += f"        {prop_emoji} {player} {side_text} {analysis['line']} (+{analysis['value_margin']:.1f}%)\n"
+                            msg_vip += "\n"
+                except Exception as e:
+                    logger.debug(f"⚠️ Props joueurs non récupérés: {e}")
+            
             msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
         
         # ── BONUS VIP: PARLAYS SUGGÉRÉS (pas dans le FREE) ──────────────
