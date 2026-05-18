@@ -2314,7 +2314,7 @@ def format_team_props_summary(team_name, props_analysis):
         value_picks = [p for p in props_analysis if p['analysis']['side'] != 'none']
         
         if not value_picks:
-            return f"📊 {team_name}\n➡️ Pas de value identifiée sur les props"
+            return f"📊 {team_name}\n🔴 ➡️ Pas de value identifiée sur les props"
         
         message = f"🏀 {team_name.upper()}\n"
         message += f"━━━━━━━━━━━━━━━━━━\n"
@@ -2330,7 +2330,7 @@ def format_team_props_summary(team_name, props_analysis):
             }.get(analysis['confidence'], '📌')
             
             side_text = 'OVER' if analysis['side'] == 'over' else 'UNDER'
-            message += f"{confidence_emoji} {player}\n"
+            message += f"🟢 {confidence_emoji} {player}\n"
             message += f"   {side_text} {analysis['line']} | Pred: {analysis['predicted_points']:.1f}\n"
             message += f"   +{analysis['value_margin']:.1f}%\n\n"
         
@@ -2886,11 +2886,11 @@ Prédiction: {analysis['predicted_points']} pts
             
             side_text = f"OVER ⬆️ @ {props['props']['points']['over']}" if analysis['side'] == 'over' else f"UNDER ⬇️ @ {props['props']['points']['under']}"
             
-            msg += f"{confidence_emoji} RECOMMANDATION: {side_text}\n"
+            msg += f"🟢 {confidence_emoji} RECOMMANDATION: {side_text}\n"
             msg += f"Value: +{analysis['value_margin']:.1f}%\n"
             msg += f"Confiance: {analysis['confidence'].upper()}\n"
         else:
-            msg += "➡️ Pas de value identifiée\n"
+            msg += "🔴 ➡️ Pas de value identifiée\n"
         
         await update.message.reply_text(msg, parse_mode='Markdown')
     except Exception as e:
