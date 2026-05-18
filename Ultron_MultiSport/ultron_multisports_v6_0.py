@@ -2641,7 +2641,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2654,7 +2654,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -2705,7 +2705,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2718,7 +2718,7 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -2769,7 +2769,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg1 += "─" * 70 + "\n\n"
             for i, (away, home, pred) in enumerate(buy_picks, 1):
                 msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg1 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg1 += "✅ Aucun pick BUY actuellement\n\n"
         
@@ -2782,7 +2782,7 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if monitoring_picks:
             for i, (away, home, pred) in enumerate(monitoring_picks, 1):
                 msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
-                msg2 += f"   💡 {pred['pick']} @ {pred['odds']}\n\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
         else:
             msg2 += "Aucun monitoring\n\n"
         
@@ -3569,15 +3569,18 @@ async def auto_send_pronostics(context):
     else:
         pick_line = pick_display
     
-    msg_free  = pick_line + "\n"
+    # Ajouter emoji de confiance (🟢 BUY / 🔴 PASS)
+    status_emoji = "🟢" if "BUY" in free['ml_status'] else "🔴"
+    msg_free  = f"{status_emoji} {pick_line}\n"
     # Ajouter les autres picks si multi-match
     for p in all_picks[1:]:
+        status_e = "🟢" if "BUY" in p['ml_status'] else "🔴"
         pick_display2 = p['ml_pick']
         if " ML" in pick_display2:
             team_name = pick_display2.replace(" ML", "").split()[-1]
-            msg_free += f"{team_name} ML\n"
+            msg_free += f"{status_e} {team_name} ML\n"
         else:
-            msg_free += f"{pick_display2}\n"
+            msg_free += f"{status_e} {pick_display2}\n"
     
     msg_free += "\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -3604,18 +3607,19 @@ async def auto_send_pronostics(context):
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
+            status_emoji = "🟢" if "BUY" in p['ml_status'] else "🔴"
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
             msg_vip += f"🕐  {p['heure']}  (heure Québec)\n\n"
             msg_vip += f"   📊  ML\n"
-            msg_vip += f"        {p['ml_pick']}\n"
+            msg_vip += f"        {status_emoji} {p['ml_pick']}\n"
             msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_status']}\n"
             if p['spread_pick']:
                 msg_vip += f"\n   📏  SPREAD\n"
-                msg_vip += f"        {p['spread_pick']}\n"
+                msg_vip += f"        {status_emoji} {p['spread_pick']}\n"
                 msg_vip += f"        Cote {p['spread_odds']}\n"
             if p['ou_pick']:
                 msg_vip += f"\n   🔢  TOTAL (O/U)\n"
-                msg_vip += f"        {p['ou_pick']}\n"
+                msg_vip += f"        {status_emoji} {p['ou_pick']}\n"
                 msg_vip += f"        Cote {p['ou_odds']}\n"
             msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
         
