@@ -2740,6 +2740,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Envoie une notification de test sur le canal FREE"""
     try:
+        # Test message pour vérifier le nouveau format d'affichage
         msg_free  = "🟢 Celtics ML\n"
         msg_free += "🟢 Kings ML\n"
         msg_free += "\n"
