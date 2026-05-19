@@ -2752,7 +2752,7 @@ async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg_free += "📊 ML: 🟢 Celtics ML @ 1.95\n"
         msg_free += "📏 SPREAD: 🟢 Celtics -2.5 @ 1.90\n"
-        msg_free += "🔢 O/U: 🟢 Over 225.5 @ 1.90\n\n"
+        msg_free += "🔢 Total Points O/U: 🟢 Over 225.5 @ 1.90\n\n"
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_free += "🏟️  🏀 Kings @ Warriors\n"
         msg_free += "🕐  22:00 (Québec)\n"
@@ -2761,7 +2761,7 @@ async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         msg_free += "📊 ML: 🟢 Kings ML @ 1.82\n"
         msg_free += "📏 SPREAD: 🔴 Kings +3.5 @ 1.85\n"
-        msg_free += "🔢 O/U: 🟡 Under 215.5 @ 1.88\n\n"
+        msg_free += "🔢 Total Points O/U: 🟡 Under 215.5 @ 1.88\n\n"
         msg_free += "💎 Parlays + autres picks en VIP ↑"
         
         await update.message.reply_text(msg_free)
@@ -3923,7 +3923,7 @@ async def auto_send_pronostics(context):
             if p.get('spread_pick'):
                 msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
             if p.get('ou_pick'):
-                msg_vip += f"{status_emoji_ou} O/U: {p['ou_pick']} @ {p['ou_odds']}\n"
+                msg_vip += f"{status_emoji_ou} Total Points O/U: {p['ou_pick']} @ {p['ou_odds']}\n"
         
         msg_vip += "\n═══════════════════════════════════════════\n"
         msg_vip += "🎯  PARLAYS BONUS\n"
