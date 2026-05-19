@@ -3824,7 +3824,7 @@ async def auto_send_pronostics(context):
     # ── Générer les parlays suggérés ──────────────────────────────────────
     parlays = []
     try:
-        parlays = analyze_and_suggest_parlays(max_suggestions=5)
+        parlays = analyze_and_suggest_parlays(max_suggestions=1)
         if parlays:
             logger.info(f"✅ {len(parlays)} parlay(s) suggéré(s)")
     except Exception as _parlay_err:
@@ -4449,7 +4449,7 @@ def analyze_and_suggest_parlays(max_suggestions: int = 5) -> list:
 async def auto_parlays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les parlays automatiquement suggérés"""
     try:
-        parlays = analyze_and_suggest_parlays(max_suggestions=5)
+        parlays = analyze_and_suggest_parlays(max_suggestions=1)
         
         if not parlays:
             await update.message.reply_text("❌ Aucun parlay suggéré (besoin de 2+ BUY picks d'autres matchs)")
