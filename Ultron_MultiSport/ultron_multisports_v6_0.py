@@ -2733,8 +2733,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "/nhl - Équipes NHL en direct\n"
     msg += "/mlb - Équipes MLB en direct\n"
     msg += "/pronostics <sport> - Pronostics (nba/nhl/mlb)\n"
+    msg += "/test - Notification de test (FREE channel)\n"
     msg += "/help - Aide"
     await update.message.reply_text(msg)
+
+async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envoie une notification de test sur le canal FREE"""
+    try:
+        msg_free  = "🟢 Celtics ML\n"
+        msg_free += "🟢 Kings ML\n"
+        msg_free += "\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_free += "🏟️  🏀 Celtics @ Heat\n"
+        msg_free += "🕐  19:30 (Québec)\n"
+        msg_free += "💵  Cote: 1.95\n"
+        msg_free += "✅ BUY\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg_free += "📊 ML: 🟢 Celtics ML @ 1.95\n"
+        msg_free += "📏 SPREAD: 🟢 Celtics -2.5 @ 1.90\n"
+        msg_free += "🔢 O/U: 🟢 Over 225.5 @ 1.90\n\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_free += "🏟️  🏀 Kings @ Warriors\n"
+        msg_free += "🕐  22:00 (Québec)\n"
+        msg_free += "💵  Cote: 1.82\n"
+        msg_free += "✅ BUY\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg_free += "📊 ML: 🟢 Kings ML @ 1.82\n"
+        msg_free += "📏 SPREAD: 🔴 Kings +3.5 @ 1.85\n"
+        msg_free += "🔢 O/U: 🟡 Under 215.5 @ 1.88\n\n"
+        msg_free += "💎 Parlays + autres picks en VIP ↑"
+        
+        await update.message.reply_text(msg_free)
+        logger.info(f"✅ Test notification envoyée au FREE channel")
+    except Exception as e:
+        logger.error(f"❌ Erreur test: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
 
 async def nhl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les équipes NHL en direct"""
@@ -4547,6 +4580,7 @@ def main():
 
     # ── Commandes manuelles ──────────────────────────────────────────────
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", test_notification))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
     app.add_handler(CommandHandler("mlb", mlb_matches))
