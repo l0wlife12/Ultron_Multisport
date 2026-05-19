@@ -1317,6 +1317,130 @@ def get_live_odds_for_match(away_team: str, home_team: str, api_events: list) ->
     }
 
 
+def get_injuries(sport: str, league: str) -> list:
+    """
+    Récupère les données sur les blessures & alignements ESPN.
+    sport: 'basketball', 'hockey', 'baseball'
+    league: 'nba', 'nhl', 'mlb'
+    Retourne: Liste de dicts {'team', 'player', 'status', 'position'}
+    """
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/injuries"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            logger.debug(f"⚠️ Injuries API {league}: HTTP {resp.status_code}")
+            return []
+        
+        data = resp.json()
+        injuries = []
+        
+        for team in data.get("injuries", []):
+            team_name = team.get("team", {}).get("displayName", "Unknown")
+            for player in team.get("injuries", []):
+                injuries.append({
+                    "team": team_name,
+                    "player": player.get("athlete", {}).get("displayName", "Unknown"),
+                    "status": player.get("status", "Unknown"),  # Questionable, Out, Day-To-Day, etc.
+                    "position": player.get("athlete", {}).get("position", {}).get("abbreviation", ""),
+                })
+        
+        logger.info(f"✅ Injuries {league}: {len(injuries)} joueurs affectés")
+        return injuries
+        
+    except Exception as e:
+        logger.error(f"❌ Injuries API erreur {league}: {e}")
+        return []
+
+
+def get_key_injuries(injuries: list, team_name: str) -> list:
+    """
+    Filtre les blessures importantes pour une équipe spécifique.
+    Retourne: Les joueurs OUT ou QUESTIONABLE seulement
+    """
+    return [i for i in injuries 
+            if team_name.lower() in i["team"].lower()
+            and i["status"].lower() in ["out", "questionable", "day-to-day"]]
+
+
+def calculate_confidence(pick_data: dict, injuries: list) -> dict:
+    """
+    Calcule un score de confiance (0-100) en tenant compte des blessures.
+    
+    pick_data doit contenir:
+    - home_team, away_team (str)
+    - home_win_pct, away_win_pct (float entre 0 et 1)
+    - home_last5, away_last5 (int: wins sur les 5 derniers matchs)
+    - pick (str: 'home' ou 'away')
+    
+    Retourne dict:
+    - confidence (0-100)
+    - reasons (liste de motivations positives)
+    - penalties (liste de pénalités)
+    - send (booléen: envoyer si ≥60)
+    """
+    score = 0
+    reasons = []
+    penalties = []
+
+    picked_team = pick_data["home_team"] if pick_data["pick"] == "home" else pick_data["away_team"]
+    other_team  = pick_data["away_team"] if pick_data["pick"] == "home" else pick_data["home_team"]
+
+    # ✅ Win % en faveur du pick
+    win_pct_diff = pick_data.get("home_win_pct", 0.5) - pick_data.get("away_win_pct", 0.5)
+    if pick_data["pick"] == "away":
+        win_pct_diff = -win_pct_diff
+
+    if win_pct_diff > 0.1:
+        score += 25
+        reasons.append(f"Win% nettement supérieur ({win_pct_diff:.0%})")
+    elif win_pct_diff > 0:
+        score += 10
+        reasons.append("Win% légèrement supérieur")
+    else:
+        score -= 10
+        penalties.append("Win% inférieur à l'adversaire")
+
+    # ✅ Forme récente (last 5)
+    picked_last5 = pick_data.get("home_last5") if pick_data["pick"] == "home" else pick_data.get("away_last5")
+    other_last5  = pick_data.get("away_last5") if pick_data["pick"] == "home" else pick_data.get("home_last5")
+
+    if picked_last5 is not None:
+        if picked_last5 >= 4:
+            score += 20
+            reasons.append(f"Excellente forme récente ({picked_last5}/5)")
+        elif picked_last5 >= 3:
+            score += 10
+            reasons.append(f"Bonne forme récente ({picked_last5}/5)")
+        elif picked_last5 <= 1:
+            score -= 15
+            penalties.append(f"Mauvaise forme récente ({picked_last5}/5)")
+
+    # 🏥 Pénalités pour blessures
+    key_injuries = get_key_injuries(injuries, picked_team)
+    if key_injuries:
+        out_count = sum(1 for i in key_injuries if i["status"].lower() == "out")
+        questionable_count = sum(1 for i in key_injuries if i["status"].lower() == "questionable")
+        score -= (out_count * 15) + (questionable_count * 7)
+        penalties.append(f"{out_count} absent(s), {questionable_count} incertain(s) chez {picked_team}")
+
+    # 🏥 Bonus si l'adversaire est touché
+    opp_injuries = get_key_injuries(injuries, other_team)
+    if opp_injuries:
+        score += len(opp_injuries) * 8
+        reasons.append(f"Adversaire affaibli ({len(opp_injuries)} blessure(s))")
+
+    # Score final entre 0 et 100
+    final_score = max(0, min(100, 50 + score))
+
+    return {
+        "confidence": final_score,
+        "reasons": reasons,
+        "penalties": penalties,
+        "send": final_score >= 60  # ✅ Seuil minimum pour envoyer
+    }
+
+
 def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     """Génère une prédiction pour un match NHL"""
     away_clean = find_team_nhl(away_team) or away_team.lower()
@@ -1708,6 +1832,61 @@ def kelly_stake(my_prob: float, decimal_odds: float, bankroll: float, fraction: 
     half_kelly = kelly * fraction
     return max(0, half_kelly * bankroll)
 
+
+def suggest_hedge(main_team: str, main_odds: float, main_prob: float, 
+                  hedge_team: str, hedge_odds: float, hedge_prob: float,
+                  bankroll: float = 1000) -> dict:
+    """
+    Suggère un hedge (contre-mise) pour maximiser les profits et minimiser les pertes.
+    
+    Retourne:
+    - main_stake: mise sur le pick principal (Kelly demi)
+    - hedge_stake: mise sur le hedge (optimisée)
+    - profit_if_main_wins: profit si le principal gagne
+    - profit_if_hedge_wins: profit si le hedge gagne
+    - roi_main: ROI si principal gagne
+    - roi_hedge: ROI si hedge gagne
+    - best_scenario: meilleur profit possible
+    - worst_scenario: meilleur pire cas (hedge protège)
+    """
+    # Calcul mise principale (Kelly demi)
+    main_stake = kelly_stake(main_prob, main_odds, bankroll, fraction=0.5)
+    
+    # Hedge agressif: couvre 40-50% de la perte potentielle
+    # Si principal perd, tu perds main_stake
+    # Hedge doit compenser une partie de cette perte
+    hedge_stake = main_stake * 0.35  # 35% du principal = bon équilibre
+    
+    # Calculs profit/perte
+    profit_if_main_wins = main_stake * (main_odds - 1) - hedge_stake
+    profit_if_hedge_wins = hedge_stake * (hedge_odds - 1) - main_stake
+    
+    # ROI (return on investment)
+    total_invested = main_stake + hedge_stake
+    roi_main = (profit_if_main_wins / total_invested * 100) if total_invested > 0 else 0
+    roi_hedge = (profit_if_hedge_wins / total_invested * 100) if total_invested > 0 else 0
+    
+    # EV (Expected Value) du système hedge
+    ev_main = main_prob * profit_if_main_wins
+    ev_hedge = hedge_prob * profit_if_hedge_wins
+    expected_value = ev_main + ev_hedge
+    
+    return {
+        "main_stake": round(main_stake, 2),
+        "hedge_stake": round(hedge_stake, 2),
+        "total_invested": round(main_stake + hedge_stake, 2),
+        "profit_if_main_wins": round(profit_if_main_wins, 2),
+        "profit_if_hedge_wins": round(profit_if_hedge_wins, 2),
+        "roi_main": round(roi_main, 1),
+        "roi_hedge": round(roi_hedge, 1),
+        "ev": round(expected_value, 2),
+        "best_scenario": round(max(profit_if_main_wins, profit_if_hedge_wins), 2),
+        "worst_scenario": round(min(profit_if_main_wins, profit_if_hedge_wins), 2),
+    }
+
+
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ML MODEL FOR NBA PREDICTIONS
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1942,7 +2121,7 @@ def predict_player_points(player_name, opponent_team, home_away,
                           minutes_last_5=32.0,
                           b2b_flag=0,
                           vegas_line=220.0):
-    """Prédit les points d'un joueur avec le modèle XGBoost"""
+    """Prédit les points d'un joueur avec le modèle XGBoost + calibration"""
     global PROPS_MODEL
     
     if not XGBOOST_AVAILABLE or PROPS_MODEL is None:
@@ -1967,10 +2146,26 @@ def predict_player_points(player_name, opponent_team, home_away,
         
         predicted_points = PROPS_MODEL.predict(features)[0]
         
+        # CALIBRATION: Réduire le biais UNDER du modèle
+        # Le modèle tend à sous-estimer. Ajuster proportionnellement aux stats du joueur
+        avg_points_factor = player_avg_pts_last_10 / 20.0 if player_avg_pts_last_10 > 0 else 1.0
+        
+        # Si joueur performant (avg > 22pts), augmenter la prédiction de 2%
+        if player_avg_pts_last_10 > 22:
+            calibration_boost = 1.02
+        # Si joueur moyen-excellent (18-22pts), augmenter de 1%
+        elif player_avg_pts_last_10 > 18:
+            calibration_boost = 1.01
+        # Sinon, maintenir la prédiction
+        else:
+            calibration_boost = 1.00
+        
+        predicted_points = predicted_points * calibration_boost
+        
         # Assurer que la prédiction est réaliste (3-60 points)
         predicted_points = max(3, min(60, predicted_points))
         
-        logger.debug(f"Props Prediction: {player_name} - Predicted Points: {predicted_points:.1f}")
+        logger.debug(f"Props Prediction: {player_name} (avg={player_avg_pts_last_10:.1f}) - Predicted: {predicted_points:.1f} (boost={calibration_boost})")
         
         return predicted_points
     except Exception as e:
@@ -2053,7 +2248,7 @@ def analyze_spread_value(predicted_margin, bookmaker_spread, min_threshold=2.0):
 # PLAYER PROPS OVER/UNDER ANALYSIS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def analyze_player_props_ou(predicted_points, bookmaker_ou_line, ou_odds={'over': 1.90, 'under': 1.90}, min_threshold=0.5):
+def analyze_player_props_ou(predicted_points, bookmaker_ou_line, ou_odds={'over': 1.90, 'under': 1.90}, min_threshold=0.3):
     """
     Analyse la valeur d'un over/under joueur comparé à la prédiction
     
@@ -2061,7 +2256,7 @@ def analyze_player_props_ou(predicted_points, bookmaker_ou_line, ou_odds={'over'
         predicted_points: Points prédits par XGBoost (ex: 24.5)
         bookmaker_ou_line: Ligne over/under du bookmaker (ex: 23.5)
         ou_odds: Cotes pour over/under {'over': 1.90, 'under': 2.10}
-        min_threshold: Écart minimum en points pour considérer comme value (par défaut 0.5)
+        min_threshold: Écart minimum en points pour considérer comme value (réduit à 0.3 pour plus de précision)
     
     Retour:
         {
@@ -2096,29 +2291,29 @@ def analyze_player_props_ou(predicted_points, bookmaker_ou_line, ou_odds={'over'
             'value_margin': 0.0
         }
         
-        # OVER VALUE: prédiction > ligne + seuil
+        # OVER VALUE: prédiction > ligne + seuil (réduit à 1.2 pour plus de sensibilité)
         if difference > min_threshold:
             result['side'] = 'over'
             # Calculer la marge de profit implicite
             value_margin = (difference / bookmaker_ou_line) * 100
             result['value_margin'] = round(value_margin, 1)
             
-            if difference > 1.5:
+            if difference > 1.2:
                 result['confidence'] = 'high'
-            elif difference > 0.75:
+            elif difference > 0.6:
                 result['confidence'] = 'medium'
             else:
                 result['confidence'] = 'low'
         
-        # UNDER VALUE: prédiction < ligne - seuil
+        # UNDER VALUE: prédiction < ligne - seuil (réduit à 1.2 aussi)
         elif difference < -min_threshold:
             result['side'] = 'under'
             value_margin = abs(difference / bookmaker_ou_line) * 100
             result['value_margin'] = round(value_margin, 1)
             
-            if difference < -1.5:
+            if difference < -1.2:
                 result['confidence'] = 'high'
-            elif difference < -0.75:
+            elif difference < -0.6:
                 result['confidence'] = 'medium'
             else:
                 result['confidence'] = 'low'
@@ -2261,7 +2456,7 @@ def analyze_all_player_props(home_team, away_team):
                         predicted_pts,
                         props['props']['points']['line'],
                         props['props']['points'],
-                        min_threshold=0.5
+                        min_threshold=0.3
                     )
                     results['home_team'].append({
                         'player': player,
@@ -2286,7 +2481,7 @@ def analyze_all_player_props(home_team, away_team):
                         predicted_pts,
                         props['props']['points']['line'],
                         props['props']['points'],
-                        min_threshold=0.5
+                        min_threshold=0.3
                     )
                     results['away_team'].append({
                         'player': player,
@@ -2863,7 +3058,7 @@ async def player_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
             predicted_pts,
             props['props']['points']['line'],
             props['props']['points'],
-            min_threshold=0.5
+            min_threshold=0.3
         )
         
         # Formater le message
@@ -3009,7 +3204,7 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             predicted_pts,
                             props['props']['points']['line'],
                             props['props']['points'],
-                            min_threshold=0.5
+                            min_threshold=0.3
                         )
                         
                         if analysis['side'] != 'none':
@@ -3036,7 +3231,7 @@ async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             predicted_pts,
                             props['props']['points']['line'],
                             props['props']['points'],
-                            min_threshold=0.5
+                            min_threshold=0.3
                         )
                         
                         if analysis['side'] != 'none':
@@ -3439,6 +3634,17 @@ async def auto_send_pronostics(context):
     for sk in sports_in_play:
         live_odds_by_sport[sk] = fetch_odds_api(sk)
 
+    # ── Récupérer les blessures & alignements pour chaque sport en jeu ────
+    injuries_by_sport = {}
+    for sk in sports_in_play:
+        if sk == "nba":
+            injuries_by_sport[sk] = get_injuries('basketball', 'nba')
+        elif sk == "nhl":
+            injuries_by_sport[sk] = get_injuries('hockey', 'nhl')
+        elif sk == "mlb":
+            injuries_by_sport[sk] = get_injuries('baseball', 'mlb')
+    logger.info(f"✅ Blessures chargées pour: {', '.join([f'{sk}({len(injuries_by_sport[sk])})' for sk in injuries_by_sport])}")
+
     # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
     espn_games_by_sport = {}
     if ESPN_CONTEXT_AVAILABLE:
@@ -3559,6 +3765,15 @@ async def auto_send_pronostics(context):
 
     heure_qc = quebec_time.strftime('%H:%M')
 
+    # ── Générer les parlays suggérés ──────────────────────────────────────
+    parlays = []
+    try:
+        parlays = analyze_and_suggest_parlays(max_suggestions=5)
+        if parlays:
+            logger.info(f"✅ {len(parlays)} parlay(s) suggéré(s)")
+    except Exception as _parlay_err:
+        logger.warning(f"⚠️ Parlay analysis: {_parlay_err}")
+
     # ── Canal FREE : 1 seul pick ML en format COMPACT ────────────────────
     free = all_picks[0]
     # Format compact: "Rays ML" ou "Dodgers +1.5" ou "Over 8.5"
@@ -3602,92 +3817,41 @@ async def auto_send_pronostics(context):
         src_label = "🟢 Cotes live" if any(p.get('source') == '🟢' for p in all_picks) else "📊 Modèle ML"
         msg_vip  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_vip += f"💎  U L T R O N  V I P\n"
-        msg_vip += f"     {len(all_picks)} MATCH(S)  •  {heure_qc}  •  {src_label}\n"
+        msg_vip += f"     {len(all_picks)} PICK(S)  •  {heure_qc}  •  {src_label}\n"
         msg_vip += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
             status_emoji = "🟢" if "BUY" in p['ml_status'] else "🔴"
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
-            msg_vip += f"🕐  {p['heure']}  (heure Québec)\n\n"
-            msg_vip += f"   📊  ML\n"
-            msg_vip += f"        {status_emoji} {p['ml_pick']}\n"
-            msg_vip += f"        Cote {p['ml_odds']}  •  {p['ml_status']}\n"
-            if p['spread_pick']:
-                msg_vip += f"\n   📏  SPREAD\n"
-                msg_vip += f"        {status_emoji} {p['spread_pick']}\n"
-                msg_vip += f"        Cote {p['spread_odds']}\n"
-            if p['ou_pick']:
-                msg_vip += f"\n   🔢  TOTAL POINTS (O/U)\n"
-                msg_vip += f"        {status_emoji} {p['ou_pick']}\n"
-                msg_vip += f"        Cote {p['ou_odds']}\n"
-            
-            # ── Ajouter les TOP PROPS JOUEURS du match (si NBA) ──
-            if "🏀" in p['label']:
-                try:
-                    # Extraire les équipes du label
-                    label_clean = p['label'].split(" ", 1)[-1]  # Retire l'emoji
-                    teams = label_clean.split(" @ ")
-                    if len(teams) == 2:
-                        away_team, home_team = teams[0].strip(), teams[1].strip()
-                        
-                        # Résultats des props
-                        props_results = analyze_all_player_props(away_team, home_team)
-                        
-                        # Collecter tous les picks avec value
-                        all_props_picks = []
-                        if props_results['away_team']:
-                            for pick in props_results['away_team']:
-                                if pick['analysis']['side'] != 'none':
-                                    all_props_picks.append(pick)
-                        if props_results['home_team']:
-                            for pick in props_results['home_team']:
-                                if pick['analysis']['side'] != 'none':
-                                    all_props_picks.append(pick)
-                        
-                        # Afficher top 3 props
-                        if all_props_picks:
-                            all_props_picks.sort(key=lambda x: x['analysis']['value_margin'], reverse=True)
-                            msg_vip += f"\n   ⭐  PROPS JOUEURS (Top 3)\n"
-                            for j, prop_pick in enumerate(all_props_picks[:3], 1):
-                                player = prop_pick['player']
-                                analysis = prop_pick['analysis']
-                                side_text = 'OVER' if analysis['side'] == 'over' else 'UNDER'
-                                prop_emoji = "🟢" if analysis['value_margin'] > 3 else "🟡"
-                                msg_vip += f"        {prop_emoji} {player} {side_text} {analysis['line']} (+{analysis['value_margin']:.1f}%)\n"
-                            msg_vip += "\n"
-                except Exception as e:
-                    logger.debug(f"⚠️ Props joueurs non récupérés: {e}")
-            
-            msg_vip += "   ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─\n"
+            msg_vip += f"🕐  {p['heure']}\n"
+            msg_vip += f"{status_emoji} {p['ml_pick']} @ {p['ml_odds']}\n"
         
-        # ── BONUS VIP: PARLAYS SUGGÉRÉS (pas dans le FREE) ──────────────
-        parlays = analyze_and_suggest_parlays(max_suggestions=3)
-        if parlays:
-            msg_vip += "\n" + "═" * 40 + "\n"
-            msg_vip += "🎯  PARLAYS BONUS (Combinaisons)\n"
-            msg_vip += "═" * 40 + "\n"
-            for i, parlay in enumerate(parlays, 1):
-                picks = parlay["picks"]
-                odds = parlay["combined_odds"]
-                msg_vip += f"\n{i}️⃣  PARLAY {len(picks)}-WAY\n"
-                msg_vip += f"   Cotes: {odds:.2f}\n"
-                msg_vip += "   Picks:\n"
-                for pred in picks:
-                    # Format ultra-compact
-                    away_short = pred['away'].split()[-1]
-                    home_short = pred['home'].split()[-1]
-                    pick_text = pred['pick'].upper()
-                    
-                    if "ML" in pick_text:
-                        team_short = pick_text.replace(" ML", "").split()[-1]
-                        msg_vip += f"      • {team_short} ML\n"
-                    elif "OVER" in pick_text or "UNDER" in pick_text:
-                        ou_line = pred.get('pick_line', 8.5)
-                        direction = "Over" if "OVER" in pick_text else "Under"
-                        msg_vip += f"      • {away_short} vs {home_short} {direction} {ou_line}\n"
-                    else:
-                        msg_vip += f"      • {pick_text}\n"
+        msg_vip += "\n═══════════════════════════════════════════\n"
+        msg_vip += "🎯  PARLAYS BONUS\n"
+        msg_vip += "═══════════════════════════════════════════\n"
+        for i, parlay in enumerate(parlays, 1):
+            picks = parlay["picks"]
+            odds = parlay["combined_odds"]
+            msg_vip += f"\n{i}️⃣  PARLAY {len(picks)}-WAY\n"
+            msg_vip += f"   Cotes: {odds:.2f}\n"
+            msg_vip += "   Picks:\n"
+            for pred in picks:
+                # Format ultra-compact
+                away_short = pred['away'].split()[-1]
+                home_short = pred['home'].split()[-1]
+                pick_text = pred['pick'].upper()
+                
+                if "ML" in pick_text:
+                    team_short = pick_text.replace(" ML", "").split()[-1]
+                    msg_vip += f"      • {team_short} ML\n"
+                elif "OVER" in pick_text or "UNDER" in pick_text:
+                    ou_line = pred.get('pick_line', 8.5)
+                    direction = "Over" if "OVER" in pick_text else "Under"
+                    msg_vip += f"      • {away_short} vs {home_short} {direction} {ou_line}\n"
+                else:
+                    msg_vip += f"      • {pick_text}\n"
         
         msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
@@ -4037,30 +4201,14 @@ async def auto_daily_recap(context):
 async def auto_brain_analysis(context):
     """
     23h30 heure Québec (30 min après le récap) : auto-analyse ROI.
-    Met à jour les seuils appris et envoie un rapport hebdomadaire (lundi seulement).
-    Lance aussi run_analysis() silencieusement chaque soir pour garder les seuils à jour.
+    Met à jour les seuils appris SILENCIEUSEMENT, sans envoi Telegram.
     """
-    if not BRAIN_AVAILABLE or not TELEGRAM_CHAT_ID:
+    if not BRAIN_AVAILABLE:
         return
     try:
-        analysis = run_analysis()   # met toujours à jour les seuils
-        # Rapport complet uniquement le lundi
-        from datetime import datetime as _dt
-        try:
-            import pytz as _pytz
-            _tz = _pytz.timezone("America/Toronto")
-            _dow = _dt.now(_tz).weekday()   # 0 = lundi
-        except Exception:
-            _dow = _dt.now().weekday()
-
-        if _dow == 0:   # lundi → rapport hebdomadaire
-            report = format_brain_report(analysis)
-            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=report)
-            if TELEGRAM_CHAT_ID_VIP:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=report)
-            logger.info("✅ Rapport Brain hebdomadaire envoyé (lundi)")
-        else:
-            logger.info("🧠 Brain: analyse silencieuse — seuils mis à jour")
+        analysis = run_analysis()   # met toujours à jour les seuils en arrière-plan
+        logger.info("🧠 Brain: analyse silencieuse — seuils mis à jour")
+        # Les rapports Telegram sont maintenant désactivés — analyse en background uniquement
     except Exception as e:
         logger.error(f"❌ auto_brain_analysis: {e}")
 
