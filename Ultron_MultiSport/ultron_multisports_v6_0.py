@@ -2746,7 +2746,7 @@ async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_free += "\n"
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_free += "🏟️  🏀 Celtics @ Heat\n"
-        msg_free += "🕐  19:30 (Québec)\n"
+        msg_free += "🕐  19:30 (Québec)  |  💼 DraftKings\n"
         msg_free += "💵  Cote: 1.95\n"
         msg_free += "✅ BUY\n"
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -2755,7 +2755,7 @@ async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg_free += "🔢 Total Points O/U: 🟢 Over 225.5 @ 1.90\n\n"
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_free += "🏟️  🏀 Kings @ Warriors\n"
-        msg_free += "🕐  22:00 (Québec)\n"
+        msg_free += "🕐  22:00 (Québec)  |  💼 FanDuel\n"
         msg_free += "💵  Cote: 1.82\n"
         msg_free += "✅ BUY\n"
         msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -3809,6 +3809,7 @@ async def auto_send_pronostics(context):
                     "label": f"{emoji} {away} @ {home}{late_tag}",
                     "heure": qc_time.strftime('%H:%M'),
                     "source": source_tag,
+                    "bookmaker": pred.get('bookmaker', 'DraftKings'),
                     # ML
                     "ml_pick": real_ml_pick,
                     "ml_odds": real_ml_odds,
@@ -3890,7 +3891,7 @@ async def auto_send_pronostics(context):
     msg_free += "\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg_free += "🏟️  " + free['label'] + "\n"
-    msg_free += f"🕐  {free['heure']} (Québec)\n"
+    msg_free += f"🕐  {free['heure']} (Québec)  |  💼 {free.get('bookmaker', 'N/A')}\n"
     msg_free += f"💵  Cote: {free['ml_odds']}\n"
     msg_free += f"{free['ml_status']}\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -3916,9 +3917,10 @@ async def auto_send_pronostics(context):
             status_emoji_ml = "🟢" if "BUY" in p['ml_status'] else "🔴"
             status_emoji_spread = "🟢" if "BUY" in p.get('spread_status', '🔴') else "🔴"
             status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '🔴') else "🔴"
+            book = p.get('bookmaker', 'N/A')
             
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
-            msg_vip += f"🕐  {p['heure']}\n"
+            msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
             msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']}\n"
             if p.get('spread_pick'):
                 msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
