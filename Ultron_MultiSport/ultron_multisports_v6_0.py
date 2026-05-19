@@ -1527,6 +1527,14 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
             spread_pick = f"{home_team.upper()} +1.5"
         spread_conf = 58
         spread_odds = 1.65
+    
+    # Déterminer le status puck line
+    if spread_conf >= 65:
+        spread_status = "✅ BUY"
+    elif spread_conf >= 55:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
 
     # ── O/U (Total buts) ──────────────────────────────────────────────────
     projected_total = away_stats["gf"] + home_stats["gf"]
@@ -1538,6 +1546,14 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
         ou_conf = min(70, int(abs(projected_total - ou_line) * 15 + 50))
     ou_odds = 1.909
+    
+    # Déterminer le status O/U
+    if ou_conf >= 65:
+        ou_status = "✅ BUY"
+    elif ou_conf >= 55:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
 
     return {
         "pick": pick,
@@ -1556,10 +1572,12 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
         "spread_confidence": spread_conf,
+        "spread_status": spread_status,
         # O/U
         "ou_pick": ou_pick,
         "ou_odds": f"{ou_odds:.2f}",
         "ou_confidence": ou_conf,
+        "ou_status": ou_status,
     }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1762,6 +1780,14 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         runline_pick = f"{home_team.upper()} PK"
         runline_conf = 50
     runline_odds = 1.909
+    
+    # Déterminer le status runline
+    if runline_conf >= 65:
+        runline_status = "✅ BUY"
+    elif runline_conf >= 55:
+        runline_status = "👀 MONITORING"
+    else:
+        runline_status = "⏸ PASS"
 
     # ━━ O/U (Total) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     projected_total = away_stats["r"] + home_stats["r"]
@@ -1773,6 +1799,14 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
         ou_conf = min(70, int(abs(projected_total - ou_line) * 5 + 50))
     ou_odds = 1.909
+    
+    # Déterminer le status O/U
+    if ou_conf >= 65:
+        ou_status = "✅ BUY"
+    elif ou_conf >= 55:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
 
     return {
         "pick": pick,
@@ -1791,10 +1825,12 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         "spread_pick": runline_pick,
         "spread_odds": f"{runline_odds:.2f}",
         "spread_confidence": runline_conf,
+        "spread_status": runline_status,
         # O/U
         "ou_pick": ou_pick,
         "ou_odds": f"{ou_odds:.2f}",
         "ou_confidence": ou_conf,
+        "ou_status": ou_status,
     }
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -2630,6 +2666,14 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         spread_pick = f"{home_team.upper()} PK"
         spread_conf = 50
     spread_odds = 1.909
+    
+    # Déterminer le status spread
+    if spread_conf >= 65:
+        spread_status = "✅ BUY"
+    elif spread_conf >= 55:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
 
     # ── O/U (Total points) ───────────────────────────────────────────────
     nba_away = NBA_TEAM_STATS.get(away_clean, {"ppg": 115.0, "pa": 112.0})
@@ -2643,6 +2687,14 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
         ou_conf = min(70, int(abs(projected_total - ou_line) * 2 + 50))
     ou_odds = 1.909
+    
+    # Déterminer le status O/U
+    if ou_conf >= 65:
+        ou_status = "✅ BUY"
+    elif ou_conf >= 55:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
 
     return {
         "pick": pick,
@@ -2662,10 +2714,12 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
         "spread_confidence": spread_conf,
+        "spread_status": spread_status,
         # O/U
         "ou_pick": ou_pick,
         "ou_odds": f"{ou_odds:.2f}",
         "ou_confidence": ou_conf,
+        "ou_status": ou_status,
     }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3731,10 +3785,12 @@ async def auto_send_pronostics(context):
                     "spread_pick": real_spread_pick,
                     "spread_odds": real_spread_odds,
                     "spread_confidence": pred.get('spread_confidence', 0),
+                    "spread_status": pred.get('spread_status', '⏸ PASS'),
                     # O/U
                     "ou_pick": real_ou_pick,
                     "ou_odds": real_ou_odds,
                     "ou_confidence": pred.get('ou_confidence', 0),
+                    "ou_status": pred.get('ou_status', '⏸ PASS'),
                     # pick FREE = ML
                     "pick": real_ml_pick,
                     "odds": real_ml_odds,
@@ -3823,10 +3879,17 @@ async def auto_send_pronostics(context):
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
-            status_emoji = "🟢" if "BUY" in p['ml_status'] else "🔴"
+            status_emoji_ml = "🟢" if "BUY" in p['ml_status'] else "🔴"
+            status_emoji_spread = "🟢" if "BUY" in p.get('spread_status', '🔴') else "🔴"
+            status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '🔴') else "🔴"
+            
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
             msg_vip += f"🕐  {p['heure']}\n"
-            msg_vip += f"{status_emoji} {p['ml_pick']} @ {p['ml_odds']}\n"
+            msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']}\n"
+            if p.get('spread_pick'):
+                msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
+            if p.get('ou_pick'):
+                msg_vip += f"{status_emoji_ou} O/U: {p['ou_pick']} @ {p['ou_odds']}\n"
         
         msg_vip += "\n═══════════════════════════════════════════\n"
         msg_vip += "🎯  PARLAYS BONUS\n"
