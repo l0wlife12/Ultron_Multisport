@@ -1543,9 +1543,9 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
     
-    if spread_confidence >= 68:
+    if spread_confidence >= 58:
         spread_status = "✅ BUY"
-    elif spread_confidence >= 55:
+    elif spread_confidence >= 50:
         spread_status = "👀 MONITORING"
     else:
         spread_status = "⏸ PASS"
@@ -1569,9 +1569,9 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
     
-    if ou_confidence >= 65:
+    if ou_confidence >= 58:
         ou_status = "✅ BUY"
-    elif ou_confidence >= 55:
+    elif ou_confidence >= 50:
         ou_status = "👀 MONITORING"
     else:
         ou_status = "⏸ PASS"
@@ -1788,9 +1788,10 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         ml_book = odds_data["home_book"]
         ml_ev = ev_home
     
-    if ml_ev > -0.005:
+    # Status basé sur confidence + EV (logique combinée)
+    if ml_confidence >= 55 and ml_ev > -0.02:
         ml_status = "✅ BUY"
-    elif ml_ev > -0.02:
+    elif ml_confidence >= 50 or ml_ev > -0.005:
         ml_status = "👀 MONITORING"
     else:
         ml_status = "⏸ PASS"
@@ -1815,9 +1816,9 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
     
-    if spread_confidence >= 68:
+    if spread_confidence >= 58:
         spread_status = "✅ BUY"
-    elif spread_confidence >= 55:
+    elif spread_confidence >= 50:
         spread_status = "👀 MONITORING"
     else:
         spread_status = "⏸ PASS"
@@ -1841,9 +1842,9 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
     
-    if ou_confidence >= 65:
+    if ou_confidence >= 58:
         ou_status = "✅ BUY"
-    elif ou_confidence >= 55:
+    elif ou_confidence >= 50:
         ou_status = "👀 MONITORING"
     else:
         ou_status = "⏸ PASS"
@@ -3030,9 +3031,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         ml_book = odds_data["home_book"]
         ml_ev = ev_home
     
-    if ml_ev > -0.005:
+    if ml_confidence >= 55 and ml_ev > -0.02:
         ml_status = "✅ BUY"
-    elif ml_ev > -0.02:
+    elif ml_confidence >= 50 or ml_ev > -0.005:
         ml_status = "👀 MONITORING"
     else:
         ml_status = "⏸ PASS"
@@ -3055,9 +3056,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
     
-    if spread_confidence >= 68:
+    if spread_confidence >= 58:
         spread_status = "✅ BUY"
-    elif spread_confidence >= 55:
+    elif spread_confidence >= 50:
         spread_status = "👀 MONITORING"
     else:
         spread_status = "⏸ PASS"
@@ -3083,9 +3084,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
     
-    if ou_confidence >= 65:
+    if ou_confidence >= 58:
         ou_status = "✅ BUY"
-    elif ou_confidence >= 55:
+    elif ou_confidence >= 50:
         ou_status = "👀 MONITORING"
     else:
         ou_status = "⏸ PASS"
@@ -4205,6 +4206,7 @@ async def auto_send_pronostics(context):
                     "heure": qc_time.strftime('%H:%M'),
                     "source": source_tag,
                     "bookmaker": pred.get('bookmaker', 'DraftKings'),
+                    "sport": sport_key,  # NBA/NHL/MLB
                     # ML
                     "ml_pick": real_ml_pick,
                     "ml_odds": real_ml_odds,
@@ -4314,13 +4316,22 @@ async def auto_send_pronostics(context):
             status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '🔴') else "🔴"
             book = p.get('bookmaker', 'N/A')
             
+            # Déterminer le label O/U selon le sport
+            sport = p.get('sport', 'NBA').upper()
+            if sport == 'MLB':
+                ou_label = "Total Runs O/U"
+            elif sport == 'NHL':
+                ou_label = "Total Goals O/U"
+            else:  # NBA
+                ou_label = "Total Points O/U"
+            
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
             msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
             msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']}\n"
             if p.get('spread_pick'):
                 msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
             if p.get('ou_pick'):
-                msg_vip += f"{status_emoji_ou} Total Points O/U: {p['ou_pick']} @ {p['ou_odds']}\n"
+                msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']}\n"
         
         msg_vip += "\n═══════════════════════════════════════════\n"
         msg_vip += "🎯  PARLAYS BONUS\n"
