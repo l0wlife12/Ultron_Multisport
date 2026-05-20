@@ -116,6 +116,21 @@ try:
 except ImportError:
     ULTRON_V2_AVAILABLE = False
 
+# MLB RunLine Analyzer — Scoring ATS + Pitcher + Sharp Money
+try:
+    from mlb_runline_analyzer import (
+        get_team_last10_games,
+        get_starting_pitcher,
+        get_mlb_injuries,
+        get_run_line_odds,
+        score_run_line,
+    )
+    MLB_RUNLINE_AVAILABLE = True
+except ImportError:
+    MLB_RUNLINE_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("⚠️ mlb_runline_analyzer not available")
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -2911,6 +2926,68 @@ def score_ou_enhanced(projected_total: float, ou_line: float, away_team: str, ho
         return {"confidence": 50, "send": False, "reasons": [], "penalties": []}
 
 
+def enrich_mlb_runline_score(away_team: str, home_team: str, game_id: str, base_runline_score: dict) -> dict:
+    """
+    Enrichit le scoring runline avec données ESPN: L10, pitcher, injuries, sharp money.
+    Retourne un score complété si MLB_RUNLINE_AVAILABLE, sinon retourne le score de base.
+    """
+    if not MLB_RUNLINE_AVAILABLE:
+        return base_runline_score
+    
+    try:
+        away_abbr = find_team_mlb(away_team) or away_team.lower()
+        home_abbr = find_team_mlb(home_team) or home_team.lower()
+        
+        # Fetch enriched data
+        away_last10  = get_team_last10_games(away_abbr)
+        home_last10  = get_team_last10_games(home_abbr)
+        away_pitcher = get_starting_pitcher(away_abbr, game_id)
+        home_pitcher = get_starting_pitcher(home_abbr, game_id)
+        injuries     = get_mlb_injuries()
+        
+        # Déterminer qui est favori/underdog basé sur base score
+        spread = base_runline_score.get("line", -1.5)
+        
+        results = []
+        for team_abbr, team_name, side, last10, pitcher in [
+            (away_abbr, away_team, "away", away_last10, away_pitcher),
+            (home_abbr, home_team, "home", home_last10, home_pitcher),
+        ]:
+            enriched_score = score_run_line(
+                team_abbr=team_abbr,
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                last10=last10,
+                pitcher=pitcher,
+                injuries=injuries,
+                odds_data={},  # Pas de mouvement de ligne dispo directement
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_runline_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "pitcher_era": best["pitcher"]["era"],
+            "pitcher_name": best["pitcher"]["name"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 MLB Runline enriched [{team_name}]: {best['confidence']}/100 (ATS {best['ats_record']}, ERA {best['pitcher']['era']:.2f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_mlb_runline error: {e}")
+        return base_runline_score
+
+
 def format_team_props_summary(team_name, props_analysis):
     """
     Formate un résumé des props pour une équipe
@@ -4150,6 +4227,14 @@ async def auto_send_pronostics(context):
                 pred = generate_prediction_nhl(away, home)
             else:
                 pred = generate_prediction_mlb(away, home)
+            
+            # ── Enrichir le scoring runline pour MLB si données ESPN disponibles ──
+            if sport_key == "mlb" and pred and MLB_RUNLINE_AVAILABLE:
+                try:
+                    game_id = event.get('id', '')  # ID ESPN du match
+                    pred = enrich_mlb_runline_score(away, home, game_id, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ MLB runline enrichment failed: {e}")
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
@@ -4329,7 +4414,16 @@ async def auto_send_pronostics(context):
             msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
             msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']}\n"
             if p.get('spread_pick'):
-                msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
+                # Afficher enriched runline pour MLB si disponible
+                if p.get('sport') == 'mlb' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    pitcher_era = p.get('pitcher_era', 0)
+                    pitcher_name = p.get('pitcher_name', 'TBD')
+                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    msg_vip += f"{emoji_enriched} RUNLINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | ERA {pitcher_era:.2f})\n"
+                else:
+                    msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
             if p.get('ou_pick'):
                 msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']}\n"
         
