@@ -151,6 +151,25 @@ except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.warning("⚠️ nba_spread_analyzer not available")
 
+# NHL Puckline Analyzer — Scoring ATS + Goalie + PP/PK + Injuries + Road trip + Sharp Money
+try:
+    from nhl_puckline_analyzer import (
+        get_team_schedule as get_nhl_team_schedule,
+        get_team_stats as get_nhl_team_stats,
+        get_starting_goalie,
+        get_nhl_injuries,
+        get_team_injury_impact as get_nhl_injury_impact,
+        get_nhl_odds_events,
+        get_puck_line_odds,
+        score_puck_line,
+        match_odds_event as match_odds_event_nhl,
+    )
+    NHL_PUCKLINE_AVAILABLE = True
+except ImportError:
+    NHL_PUCKLINE_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("⚠️ nhl_puckline_analyzer not available")
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3084,6 +3103,90 @@ def enrich_nba_spread_score(home_team: str, away_team: str, home_abbr: str, away
         return base_spread_score
 
 
+def enrich_nhl_puckline_score(home_team: str, away_team: str, home_abbr: str, away_abbr: str, game_id: str, base_puckline_score: dict) -> dict:
+    """
+    Enrichit le scoring puck line NHL avec données ESPN: L10, Goalie, PP/PK, Injuries, Road trip, Sharp money.
+    Retourne un score complété si NHL_PUCKLINE_AVAILABLE, sinon retourne le score de base.
+    """
+    if not NHL_PUCKLINE_AVAILABLE:
+        return base_puckline_score
+    
+    try:
+        # Fetch enriched data
+        injuries    = get_nhl_injuries()
+        odds_events = get_nhl_odds_events()
+        
+        home_schedule = get_nhl_team_schedule(home_abbr)
+        away_schedule = get_nhl_team_schedule(away_abbr)
+        home_stats    = get_nhl_team_stats(home_abbr)
+        away_stats    = get_nhl_team_stats(away_abbr)
+        home_goalie   = get_starting_goalie(home_abbr, game_id)
+        away_goalie   = get_starting_goalie(away_abbr, game_id)
+        home_injuries = get_nhl_injury_impact(home_team, injuries)
+        away_injuries = get_nhl_injury_impact(away_team, injuries)
+        
+        # Odds data (match ESPN game avec Odds API event)
+        odds_id   = match_odds_event_nhl(home_abbr, away_abbr, odds_events) if odds_events else None
+        odds_data = get_puck_line_odds(odds_id) if odds_id else {}
+        
+        if not odds_data:
+            logger.debug(f"⚠️ No NHL odds data for {away_team} @ {home_team} — returning base score")
+            return base_puckline_score
+        
+        home_spread = odds_data.get("home_spread", -1.5)
+        away_spread = -home_spread
+        
+        # Score les deux côtés
+        results = []
+        for team_name, side, spread, schedule, stats, goalie, inj in [
+            (home_team, "home", home_spread, home_schedule, home_stats, home_goalie, home_injuries),
+            (away_team, "away", away_spread, away_schedule, away_stats, away_goalie, away_injuries),
+        ]:
+            enriched_score = score_puck_line(
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                schedule=schedule,
+                team_stats=stats,
+                goalie=goalie,
+                injury_impact=inj,
+                odds_data=odds_data,
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_puckline_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "ats_rate": best["ats_rate"],
+            "avg_diff": best["avg_diff"],
+            "win_by_2_pct": best["win_by_2_pct"],
+            "reg_win_pct": best["reg_win_pct"],
+            "goalie": best["goalie"],
+            "pp_pct": best["pp_pct"],
+            "pk_pct": best["pk_pct"],
+            "is_b2b": best["is_b2b"],
+            "road_trip": best["road_trip"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 NHL Puckline enriched [{best['team']} {best['spread']:+.1f}]: {best['confidence']}/100 (ATS {best['ats_record']}, {best['goalie']['name']})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nhl_puckline_score error: {e}")
+        return base_puckline_score
+
+
 def format_team_props_summary(team_name, props_analysis):
     """
     Formate un résumé des props pour une équipe
@@ -4340,6 +4443,16 @@ async def auto_send_pronostics(context):
                     pred = enrich_nba_spread_score(home, away, home_abbr, away_abbr, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ NBA spread enrichment failed: {e}")
+            
+            # ── Enrichir le scoring puck line pour NHL si données ESPN disponibles ──
+            if sport_key == "nhl" and pred and NHL_PUCKLINE_AVAILABLE:
+                try:
+                    away_abbr = find_team_nhl(away) or away.lower()
+                    home_abbr = find_team_nhl(home) or home.lower()
+                    game_id = event.get('id', '')  # ID ESPN du match
+                    pred = enrich_nhl_puckline_score(home, away, home_abbr, away_abbr, game_id, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NHL puckline enrichment failed: {e}")
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
@@ -4536,6 +4649,14 @@ async def auto_send_pronostics(context):
                     emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
                     b2b_tag = " ⚠️ B2B" if is_b2b else ""
                     msg_vip += f"{emoji_enriched} SPREAD: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | Net {net_rating:+.1f}){b2b_tag}\n"
+                # Afficher enriched puck line pour NHL si disponible
+                elif p.get('sport') == 'nhl' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    goalie_name = p.get('goalie', {}).get('name', 'TBD') if isinstance(p.get('goalie'), dict) else 'TBD'
+                    goalie_sv = p.get('goalie', {}).get('save_pct', 0.900) if isinstance(p.get('goalie'), dict) else 0.900
+                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    msg_vip += f"{emoji_enriched} PUCK LINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | 🥅 {goalie_name} {goalie_sv:.3f})\n"
                 else:
                     msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
             if p.get('ou_pick'):
