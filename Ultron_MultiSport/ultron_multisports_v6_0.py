@@ -131,6 +131,26 @@ except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.warning("⚠️ mlb_runline_analyzer not available")
 
+# NBA Spread Analyzer — Scoring ATS + Advanced Stats + Sharp Money + B2B Detection
+try:
+    from nba_spread_analyzer import (
+        get_nba_games_today,
+        get_team_id,
+        get_team_schedule,
+        get_team_advanced_stats,
+        get_nba_injuries,
+        get_team_injury_impact,
+        get_nba_odds_events,
+        get_nba_spread_odds,
+        score_nba_spread,
+        match_odds_event,
+    )
+    NBA_SPREAD_AVAILABLE = True
+except ImportError:
+    NBA_SPREAD_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("⚠️ nba_spread_analyzer not available")
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -2988,6 +3008,82 @@ def enrich_mlb_runline_score(away_team: str, home_team: str, game_id: str, base_
         return base_runline_score
 
 
+def enrich_nba_spread_score(home_team: str, away_team: str, home_abbr: str, away_abbr: str, base_spread_score: dict) -> dict:
+    """
+    Enrichit le scoring spread NBA avec données ESPN: L10, advanced stats, injuries, sharp money, B2B.
+    Retourne un score complété si NBA_SPREAD_AVAILABLE, sinon retourne le score de base.
+    """
+    if not NBA_SPREAD_AVAILABLE:
+        return base_spread_score
+    
+    try:
+        # Fetch enriched data
+        injuries    = get_nba_injuries()
+        odds_events = get_nba_odds_events()
+        
+        home_schedule = get_team_schedule(home_abbr)
+        away_schedule = get_team_schedule(away_abbr)
+        home_stats    = get_team_advanced_stats(home_abbr)
+        away_stats    = get_team_advanced_stats(away_abbr)
+        home_injuries = get_team_injury_impact(home_team, injuries)
+        away_injuries = get_team_injury_impact(away_team, injuries)
+        
+        # Odds data (match ESPN game avec Odds API event)
+        odds_id   = match_odds_event(home_abbr, away_abbr, odds_events) if odds_events else None
+        odds_data = get_nba_spread_odds(odds_id) if odds_id else {}
+        
+        if not odds_data:
+            logger.debug(f"⚠️ No NBA odds data for {away_team} @ {home_team} — returning base score")
+            return base_spread_score
+        
+        home_spread = odds_data.get("home_spread", -3.5)
+        away_spread = -home_spread
+        
+        # Score les deux côtés
+        results = []
+        for team_name, side, spread, schedule, stats, inj in [
+            (home_team, "home", home_spread, home_schedule, home_stats, home_injuries),
+            (away_team, "away", away_spread, away_schedule, away_stats, away_injuries),
+        ]:
+            enriched_score = score_nba_spread(
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                schedule=schedule,
+                adv_stats=stats,
+                injury_impact=inj,
+                odds_data=odds_data,
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_spread_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "ats_rate": best["ats_rate"],
+            "avg_diff": best["avg_diff"],
+            "net_rating": best["net_rating"],
+            "is_b2b": best["is_b2b"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 NBA Spread enriched [{best['team']} {best['spread']:+.1f}]: {best['confidence']}/100 (ATS {best['ats_record']}, Net {best['net_rating']:+.1f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nba_spread_score error: {e}")
+        return base_spread_score
+
+
 def format_team_props_summary(team_name, props_analysis):
     """
     Formate un résumé des props pour une équipe
@@ -4235,6 +4331,15 @@ async def auto_send_pronostics(context):
                     pred = enrich_mlb_runline_score(away, home, game_id, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ MLB runline enrichment failed: {e}")
+            
+            # ── Enrichir le scoring spread pour NBA si données ESPN disponibles ──
+            if sport_key == "nba" and pred and NBA_SPREAD_AVAILABLE:
+                try:
+                    away_abbr = find_team_nba(away) or away.lower()
+                    home_abbr = find_team_nba(home) or home.lower()
+                    pred = enrich_nba_spread_score(home, away, home_abbr, away_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NBA spread enrichment failed: {e}")
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
@@ -4422,6 +4527,15 @@ async def auto_send_pronostics(context):
                     pitcher_name = p.get('pitcher_name', 'TBD')
                     emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
                     msg_vip += f"{emoji_enriched} RUNLINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | ERA {pitcher_era:.2f})\n"
+                # Afficher enriched spread pour NBA si disponible
+                elif p.get('sport') == 'nba' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    net_rating = p.get('net_rating', 0)
+                    is_b2b = p.get('is_b2b', False)
+                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    b2b_tag = " ⚠️ B2B" if is_b2b else ""
+                    msg_vip += f"{emoji_enriched} SPREAD: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | Net {net_rating:+.1f}){b2b_tag}\n"
                 else:
                     msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
             if p.get('ou_pick'):
