@@ -4354,8 +4354,8 @@ def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> 
             ce = {'high': '🔥', 'medium': '⚡', 'low': '📌'}.get(a['confidence'], '📌')
             side = 'OVER' if a['side'] == 'over' else 'UNDER'
             msg += f"{ce} {entry['player']}\n"
-            msg += f"   {side} {a['line']} | Pred: {a['predicted_points']:.1f}\n"
-            msg += f"   +{a.get('value_margin', 0):.1f}%\n\n"
+            msg += f"   {side} {int(round(a['line']))} | Pred: {int(round(a['predicted_points']))}\n"
+            msg += f"   +{int(round(a.get('value_margin', 0)))}%\n\n"
 
         return msg.strip()
     except Exception as e:
