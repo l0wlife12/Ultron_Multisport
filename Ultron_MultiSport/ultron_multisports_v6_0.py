@@ -188,6 +188,24 @@ except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.warning("⚠️ nba_moneyline_analyzer_advanced not available")
 
+# NHL Advanced MoneyLine Analyzer — ESPN data + Goalie + Road Trip + PP/PK
+try:
+    from nhl_moneyline_analyzer_advanced import (
+        get_nhl_games_today as get_nhl_games_ml_advanced,
+        get_team_schedule as get_nhl_schedule_ml_advanced,
+        get_team_stats as get_nhl_stats_ml_advanced,
+        get_nhl_injuries as get_nhl_inj_ml_advanced,
+        get_team_injury_impact as get_nhl_injury_impact_ml_advanced,
+        get_moneyline_odds as get_nhl_moneyline_odds,
+        score_moneyline as score_nhl_moneyline,
+        run_nhl_moneyline_advanced,
+    )
+    NHL_MONEYLINE_ADVANCED_AVAILABLE = True
+except ImportError:
+    NHL_MONEYLINE_ADVANCED_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("⚠️ nhl_moneyline_analyzer_advanced not available")
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3287,6 +3305,114 @@ def enrich_nba_moneyline_score(away_team: str, home_team: str, away_abbr: str, h
         return base_ml_score
 
 
+def enrich_nhl_moneyline_score(away_team: str, home_team: str, away_abbr: str, home_abbr: str, base_ml_score: dict) -> dict:
+    """
+    Enrichir le score MoneyLine NHL avec données ESPN avancées.
+    Falback gracieux si données indisponibles.
+    
+    Retour:
+        base_ml_score enrichi avec confidence_enriched, edge, goalie, road_trip, pp_pct, pk_pct
+    """
+    if not NHL_MONEYLINE_ADVANCED_AVAILABLE:
+        logger.debug(f"ℹ️ NHL advanced ML analyzer not available — using base score")
+        return base_ml_score
+    
+    try:
+        # Récupérer les données ESPN pour les deux équipes
+        home_schedule = get_nhl_schedule_ml_advanced(home_abbr)
+        away_schedule = get_nhl_schedule_ml_advanced(away_abbr)
+        home_stats = get_nhl_stats_ml_advanced(home_abbr)
+        away_stats = get_nhl_stats_ml_advanced(away_abbr)
+        
+        # Get goalies
+        home_goalie = {
+            "name": "TBD",
+            "save_pct": home_stats.get("save_pct", 0.900),
+            "gaa": 3.00,
+            "games": 0,
+            "is_backup": False,
+            "confirmed": False
+        }
+        away_goalie = {
+            "name": "TBD",
+            "save_pct": away_stats.get("save_pct", 0.900),
+            "gaa": 3.00,
+            "games": 0,
+            "is_backup": False,
+            "confirmed": False
+        }
+        
+        injuries = get_nhl_inj_ml_advanced()
+        home_injuries = get_nhl_injury_impact_ml_advanced(home_team, injuries)
+        away_injuries = get_nhl_injury_impact_ml_advanced(away_team, injuries)
+        
+        # Récupérer les cotes ML du match
+        odds_data = {
+            "home_ml": base_ml_score.get("ml_odds", -110) if home_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "away_ml": -110 if away_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "implied_prob_home": 0.52,
+            "implied_prob_away": 0.48,
+            "line_movement": 0,
+            "sharp_signal": False,
+            "sharp_direction": "none",
+        }
+        
+        # Scorer les deux côtés
+        home_result = score_nhl_moneyline(
+            home_team,
+            "home",
+            home_schedule,
+            home_stats,
+            home_goalie,
+            home_injuries,
+            odds_data,
+        )
+        away_result = score_nhl_moneyline(
+            away_team,
+            "away",
+            away_schedule,
+            away_stats,
+            away_goalie,
+            away_injuries,
+            odds_data,
+        )
+        
+        # Déterminer le meilleur pick
+        best = max([home_result, away_result], key=lambda r: r["confidence"])
+        
+        # Enrichir le base_score avec les données avancées
+        enriched = base_ml_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "edge": best["edge"],
+            "espn_prob": best["espn_prob"],
+            "implied_prob": best["implied_prob"],
+            "regulation_win_pct": best.get("regulation_win_pct", 0),
+            "is_b2b": best["is_b2b"],
+            "wins_l10": best["wins_l10"],
+            "goalie": best["goalie"]["name"],
+            "goalie_sv_pct": best["goalie"].get("save_pct", 0),
+            "pp_pct": best["pp_pct"],
+            "pk_pct": best["pk_pct"],
+            "road_trip": best["road_trip"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "def_out": away_injuries.get("def_out_count", 0) if best["side"] == "away" else home_injuries.get("def_out_count", 0),
+            "fwd_out": away_injuries.get("fwd_out_count", 0) if best["side"] == "away" else home_injuries.get("fwd_out_count", 0),
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🏒 NHL ML enriched [{best['team']}]: {best['confidence']}/100 (edge: {best['edge']:+.0%}, L10: {best['wins_l10']}/10, goalie: {best['goalie']['name']})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nhl_moneyline_score error: {e}")
+        return base_ml_score
+
+
 def format_team_props_summary(team_name, props_analysis):
     """
     Formate un résumé des props pour une équipe
@@ -4583,6 +4709,15 @@ async def auto_send_pronostics(context):
                     pred = enrich_nba_moneyline_score(away, home, away_abbr, home_abbr, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ NBA moneyline enrichment failed: {e}")
+
+            # ── Enrichir le scoring MoneyLine pour NHL si données ESPN avancées disponibles ──
+            if sport_key == "nhl" and pred and NHL_MONEYLINE_ADVANCED_AVAILABLE:
+                try:
+                    away_abbr = find_team_nhl(away) or away.lower()
+                    home_abbr = find_team_nhl(home) or home.lower()
+                    pred = enrich_nhl_moneyline_score(away, home, away_abbr, home_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NHL moneyline enrichment failed: {e}")
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
