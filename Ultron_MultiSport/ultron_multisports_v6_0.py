@@ -4311,6 +4311,24 @@ async def auto_daily_motivation(context):
             logger.error(f"❌ Erreur alertes blessures: {e}")
 
 
+def normalize_to_bookmaker_line(value: float) -> float:
+    """
+    Normalise une ligne aux standards des bookmakers: seulement .5 ou .0
+    Ex: 4.3 → 4.5, 4.2 → 4.0, 20.8 → 21.0
+    """
+    if value is None:
+        return value
+    integer_part = int(value)
+    decimal_part = value - integer_part
+    
+    if decimal_part < 0.25:
+        return float(integer_part)
+    elif decimal_part < 0.75:
+        return float(integer_part) + 0.5
+    else:
+        return float(integer_part + 1)
+
+
 def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> str:
     """
     Analyse et formate les props joueurs NBA pour un match.
@@ -4353,8 +4371,11 @@ def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> 
             a  = entry['analysis']
             ce = {'high': '🔥', 'medium': '⚡', 'low': '📌'}.get(a['confidence'], '📌')
             side = 'OVER' if a['side'] == 'over' else 'UNDER'
+            # Normaliser la ligne aux standards bookmakers (.5 ou .0)
+            normalized_line = normalize_to_bookmaker_line(a['line'])
+            normalized_pred = normalize_to_bookmaker_line(a['predicted_points'])
             msg += f"{ce} {entry['player']}\n"
-            msg += f"   {side} {int(round(a['line']))} | Pred: {int(round(a['predicted_points']))}\n"
+            msg += f"   {side} {normalized_line} | Pred: {normalized_pred}\n"
             msg += f"   +{int(round(a.get('value_margin', 0)))}%\n\n"
 
         return msg.strip()
