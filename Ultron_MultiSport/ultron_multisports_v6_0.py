@@ -206,6 +206,24 @@ except ImportError:
     logger_init = logging.getLogger(__name__)
     logger_init.warning("⚠️ nhl_moneyline_analyzer_advanced not available")
 
+# MLB Advanced MoneyLine Analyzer — ESPN pitcher quality + OPS + Run diff
+try:
+    from mlb_moneyline_analyzer_advanced import (
+        get_mlb_games_today as get_mlb_games_ml_advanced,
+        get_team_schedule as get_mlb_schedule_ml_advanced,
+        get_team_stats as get_mlb_stats_ml_advanced,
+        get_mlb_injuries as get_mlb_inj_ml_advanced,
+        get_team_injury_impact as get_mlb_injury_impact_ml_advanced,
+        get_moneyline_odds as get_mlb_moneyline_odds,
+        score_moneyline as score_mlb_moneyline,
+        run_mlb_moneyline_advanced,
+    )
+    MLB_MONEYLINE_ADVANCED_AVAILABLE = True
+except ImportError:
+    MLB_MONEYLINE_ADVANCED_AVAILABLE = False
+    logger_init = logging.getLogger(__name__)
+    logger_init.warning("⚠️ mlb_moneyline_analyzer_advanced not available")
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -3413,6 +3431,110 @@ def enrich_nhl_moneyline_score(away_team: str, home_team: str, away_abbr: str, h
         return base_ml_score
 
 
+def enrich_mlb_moneyline_score(away_team: str, home_team: str, away_abbr: str, home_abbr: str, base_ml_score: dict) -> dict:
+    """
+    Enrichir le score MoneyLine MLB avec données ESPN avancées.
+    Fallback gracieux si données indisponibles.
+    
+    Retour:
+        base_ml_score enrichi avec confidence_enriched, edge, pitcher, ops, run_diff
+    """
+    if not MLB_MONEYLINE_ADVANCED_AVAILABLE:
+        logger.debug(f"ℹ️ MLB advanced ML analyzer not available — using base score")
+        return base_ml_score
+    
+    try:
+        # Récupérer les données ESPN pour les deux équipes
+        home_schedule = get_mlb_schedule_ml_advanced(home_abbr)
+        away_schedule = get_mlb_schedule_ml_advanced(away_abbr)
+        home_stats = get_mlb_stats_ml_advanced(home_abbr)
+        away_stats = get_mlb_stats_ml_advanced(away_abbr)
+        
+        # Get starting pitchers
+        home_pitcher = {
+            "name": "TBD",
+            "era": home_stats.get("team_era", 4.50),
+            "whip": 1.30,
+            "wins": 0,
+            "k9": 0,
+            "confirmed": False
+        }
+        away_pitcher = {
+            "name": "TBD",
+            "era": away_stats.get("team_era", 4.50),
+            "whip": 1.30,
+            "wins": 0,
+            "k9": 0,
+            "confirmed": False
+        }
+        
+        injuries = get_mlb_inj_ml_advanced()
+        home_injuries = get_mlb_injury_impact_ml_advanced(home_team, injuries)
+        away_injuries = get_mlb_injury_impact_ml_advanced(away_team, injuries)
+        
+        # Récupérer les cotes ML du match
+        odds_data = {
+            "home_ml": base_ml_score.get("ml_odds", -110) if home_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "away_ml": -110 if away_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "implied_prob_home": 0.52,
+            "implied_prob_away": 0.48,
+            "line_movement": 0,
+            "sharp_signal": False,
+            "sharp_direction": "none",
+        }
+        
+        # Scorer les deux côtés
+        home_result = score_mlb_moneyline(
+            home_team,
+            "home",
+            home_schedule,
+            home_stats,
+            home_pitcher,
+            home_injuries,
+            odds_data,
+        )
+        away_result = score_mlb_moneyline(
+            away_team,
+            "away",
+            away_schedule,
+            away_stats,
+            away_pitcher,
+            away_injuries,
+            odds_data,
+        )
+        
+        # Déterminer le meilleur pick
+        best = max([home_result, away_result], key=lambda r: r["confidence"])
+        
+        # Enrichir le base_score avec les données avancées
+        enriched = base_ml_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "edge": best["edge"],
+            "espn_prob": best["espn_prob"],
+            "implied_prob": best["implied_prob"],
+            "wins_l10": best["wins_l10"],
+            "pitcher": best["pitcher"]["name"],
+            "pitcher_era": best["pitcher"].get("era", 4.50),
+            "pitcher_whip": best["pitcher"].get("whip", 1.30),
+            "ops": best["ops"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "stars_out": away_injuries.get("out_count", 0) if best["side"] == "away" else home_injuries.get("out_count", 0),
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"⚾ MLB ML enriched [{best['team']}]: {best['confidence']}/100 (edge: {best['edge']:+.0%}, L10: {best['wins_l10']}/10, pitcher ERA: {best['pitcher'].get('era', 4.50):.2f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_mlb_moneyline_score error: {e}")
+        return base_ml_score
+
+
 def format_team_props_summary(team_name, props_analysis):
     """
     Formate un résumé des props pour une équipe
@@ -4718,6 +4840,15 @@ async def auto_send_pronostics(context):
                     pred = enrich_nhl_moneyline_score(away, home, away_abbr, home_abbr, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ NHL moneyline enrichment failed: {e}")
+
+            # ── Enrichir le scoring MoneyLine pour MLB si données ESPN avancées disponibles ──
+            if sport_key == "mlb" and pred and MLB_MONEYLINE_ADVANCED_AVAILABLE:
+                try:
+                    away_abbr = find_team_mlb(away) or away.lower()
+                    home_abbr = find_team_mlb(home) or home.lower()
+                    pred = enrich_mlb_moneyline_score(away, home, away_abbr, home_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ MLB moneyline enrichment failed: {e}")
 
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
