@@ -4554,6 +4554,20 @@ async def auto_send_pronostics(context):
             all_picks = filtered
             logger.info(f"🧠 Brain filter: {len(all_picks)} pick(s) retenus")
 
+    # ── Limitation MLB : max 5 picks par jour ──────────────────────────────
+    mlb_max = 5
+    mlb_picks = [p for p in all_picks if "⚾" in p["label"]]
+    nba_picks = [p for p in all_picks if "🏀" in p["label"]]
+    nhl_picks = [p for p in all_picks if "🏒" in p["label"]]
+    
+    if len(mlb_picks) > mlb_max:
+        mlb_picks_limited = mlb_picks[:mlb_max]
+        mlb_rejected_count = len(mlb_picks) - mlb_max
+        logger.info(f"🚫 MLB limitée: {mlb_max} picks envoyés, {mlb_rejected_count} refusés (trop nombreux)")
+        all_picks = mlb_picks_limited + nba_picks + nhl_picks
+    else:
+        logger.info(f"⚾ MLB: {len(mlb_picks)} pick(s) (limite: {mlb_max})")
+
     heure_qc = quebec_time.strftime('%H:%M')
 
     # ── Générer les parlays suggérés ──────────────────────────────────────
