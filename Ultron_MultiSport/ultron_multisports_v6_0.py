@@ -4897,9 +4897,12 @@ async def auto_send_pronostics(context):
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
-            status_emoji_ml = "🟢" if "BUY" in p['ml_status'] else "🔴"
-            status_emoji_spread = "🟢" if "BUY" in p.get('spread_status', '🔴') else "🔴"
-            status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '🔴') else "🔴"
+            # Statut ML: Support 3 états (BUY/MONITORING/PASS)
+            status_emoji_ml = "🟢" if "BUY" in p['ml_status'] else ("🟡" if "MONITORING" in p['ml_status'] else "🔴")
+            # Statut SPREAD: Support 3 états (BUY/MONITORING/PASS)
+            status_emoji_spread = "🟢" if "BUY" in p.get('spread_status', '') else ("🟡" if "MONITORING" in p.get('spread_status', '') else "🔴")
+            # Statut O/U: Support 3 états (BUY/MONITORING/PASS)
+            status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '') else ("🟡" if "MONITORING" in p.get('ou_status', '') else "🔴")
             book = p.get('bookmaker', 'N/A')
             
             # Déterminer le label O/U selon le sport
