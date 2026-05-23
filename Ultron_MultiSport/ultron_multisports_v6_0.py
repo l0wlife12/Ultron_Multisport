@@ -4652,7 +4652,8 @@ async def auto_send_pronostics(context):
     # ── Réinitialiser le compteur MLB si on est à un nouveau jour ──
     global _mlb_picks_sent_today
     if _mlb_picks_sent_today["date"] != date_key:
-        _mlb_picks_sent_today = {"date": date_key, "count": 0}
+        _mlb_picks_sent_today["date"] = date_key
+        _mlb_picks_sent_today["count"] = 0
         logger.info(f"🔄 Compteur MLB reinitialisé pour le jour: {date_key}")
 
     logger.info(f"🔍 auto_send_pronostics: vérification des matchs... (Québec: {quebec_time.strftime('%H:%M')}, UTC: {now_utc.strftime('%H:%M')})")
@@ -4918,6 +4919,7 @@ async def auto_send_pronostics(context):
                 
                 # ── Incrémenter compteur MLB ──
                 if sport_key == "mlb":
+                    global _mlb_picks_sent_today
                     _mlb_picks_sent_today["count"] += 1
                     logger.info(f"📊 MLB pick ajouté: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY}")
                 
