@@ -13,9 +13,8 @@ import logging
 import warnings
 import datetime
 import requests
-import json
 import pytz
-import math
+from typing import Dict, List, Optional, Tuple, Any
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
@@ -27,7 +26,7 @@ try:
     NBA_API_AVAILABLE = True
 except ImportError:
     NBA_API_AVAILABLE = False
-    
+
 try:
     from sportsreference.nba.teams import Teams as NBATeams
     SPORTSREFERENCE_AVAILABLE = True
@@ -72,7 +71,6 @@ try:
     ESPN_CONTEXT_AVAILABLE = True
 except ImportError:
     ESPN_CONTEXT_AVAILABLE = False
-    logger = logging.getLogger(__name__)
 
 # Mémoire des picks — auto-notation des résultats via ESPN
 try:
@@ -88,7 +86,6 @@ try:
     PICK_MEMORY_AVAILABLE = True
 except ImportError:
     PICK_MEMORY_AVAILABLE = False
-    logger = logging.getLogger(__name__)
 
 # Brain — auto-analyse ROI et optimisation des seuils
 try:
@@ -128,8 +125,6 @@ try:
     MLB_RUNLINE_AVAILABLE = True
 except ImportError:
     MLB_RUNLINE_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ mlb_runline_analyzer not available")
 
 # NBA Spread Analyzer — Scoring ATS + Advanced Stats + Sharp Money + B2B Detection
 try:
@@ -148,8 +143,6 @@ try:
     NBA_SPREAD_AVAILABLE = True
 except ImportError:
     NBA_SPREAD_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ nba_spread_analyzer not available")
 
 # NHL Puckline Analyzer — Scoring ATS + Goalie + PP/PK + Injuries + Road trip + Sharp Money
 try:
@@ -167,8 +160,6 @@ try:
     NHL_PUCKLINE_AVAILABLE = True
 except ImportError:
     NHL_PUCKLINE_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ nhl_puckline_analyzer not available")
 
 # NBA Advanced MoneyLine Analyzer — ESPN data + Sharp Money + B2B + Injuries
 try:
@@ -185,8 +176,6 @@ try:
     NBA_MONEYLINE_ADVANCED_AVAILABLE = True
 except ImportError:
     NBA_MONEYLINE_ADVANCED_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ nba_moneyline_analyzer_advanced not available")
 
 # NHL Advanced MoneyLine Analyzer — ESPN data + Goalie + Road Trip + PP/PK
 try:
@@ -203,8 +192,6 @@ try:
     NHL_MONEYLINE_ADVANCED_AVAILABLE = True
 except ImportError:
     NHL_MONEYLINE_ADVANCED_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ nhl_moneyline_analyzer_advanced not available")
 
 # MLB Advanced MoneyLine Analyzer — ESPN pitcher quality + OPS + Run diff
 try:
@@ -221,8 +208,6 @@ try:
     MLB_MONEYLINE_ADVANCED_AVAILABLE = True
 except ImportError:
     MLB_MONEYLINE_ADVANCED_AVAILABLE = False
-    logger_init = logging.getLogger(__name__)
-    logger_init.warning("⚠️ mlb_moneyline_analyzer_advanced not available")
 
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
@@ -241,29 +226,34 @@ logger = logging.getLogger(__name__)
 if not SKLEARN_AVAILABLE:
     logger.warning("⚠️ scikit-learn non disponible - Utilisant modèle statistique simple")
 
-# TIMEZONE QUÉBEC (EDT = UTC-4)
+# TIMEZONE & CONFIGURATION
 QUEBEC_TZ = pytz.timezone('America/Toronto')
 
 def get_quebec_time() -> datetime.datetime:
     """Retourne l'heure actuelle en fuseau horaire Québec"""
     return datetime.datetime.now(QUEBEC_TZ)
 
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-if not TELEGRAM_TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables.")
+# Validation configuration critique
+def _validate_config() -> None:
+    """Valide que les variables d'environnement requises sont présentes"""
+    telegram_token = os.getenv('TELEGRAM_TOKEN')
+    if not telegram_token:
+        raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables.")
+    
+    chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    chat_id_vip = os.getenv('TELEGRAM_CHAT_ID_VIP')
+    odds_key = os.getenv('ODDS_API_KEY')
+    
+    logger.info(f"✅ TELEGRAM_CHAT_ID configuré" if chat_id else "⚠️ TELEGRAM_CHAT_ID manquant")
+    logger.info(f"✅ TELEGRAM_CHAT_ID_VIP configuré" if chat_id_vip else "⚠️ TELEGRAM_CHAT_ID_VIP manquant")
+    logger.info(f"✅ ODDS_API_KEY configuré" if odds_key else "⚠️ ODDS_API_KEY désactivé")
 
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 TELEGRAM_CHAT_ID_VIP = os.getenv('TELEGRAM_CHAT_ID_VIP')
 ODDS_API_KEY = os.getenv('ODDS_API_KEY')
 
-if TELEGRAM_CHAT_ID:
-    logger.info(f"✅ TELEGRAM_CHAT_ID configuré")
-if TELEGRAM_CHAT_ID_VIP:
-    logger.info(f"✅ TELEGRAM_CHAT_ID_VIP configuré")
-if ODDS_API_KEY:
-    logger.info(f"✅ ODDS_API_KEY configuré")
-else:
-    logger.warning("⚠️ ODDS_API_KEY non configuré - cotes en temps réel désactivées")
+_validate_config()
 
 # Cache des matchs par sport
 MATCHES_CACHE_NBA = []
@@ -351,142 +341,11 @@ MLB_TEAM_STATS = {
     "angels": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HOCKEY ODDS (BET365, BETFAIR, DRAFTKINGS)
-# ═══════════════════════════════════════════════════════════════════════════
-BET365_ODDS_NHL = {
-    ("hurricanes", "avalanche"): {"away_ml": 2.40, "home_ml": 1.55, "total": 6.5, "under": 1.92, "over": 1.88},
-    ("maple_leafs", "golden_knights"): {"away_ml": 1.85, "home_ml": 1.95, "total": 6.0, "under": 1.90, "over": 1.90},
-    ("rangers", "oilers"): {"away_ml": 2.10, "home_ml": 1.72, "total": 6.5, "under": 1.91, "over": 1.89},
-    ("stars", "lightning"): {"away_ml": 1.95, "home_ml": 1.85, "total": 6.0, "under": 1.90, "over": 1.90},
-    ("panthers", "capitals"): {"away_ml": 1.60, "home_ml": 2.30, "total": 6.0, "under": 1.91, "over": 1.89},
-    ("bruins", "canadiens"): {"away_ml": 1.72, "home_ml": 2.10, "total": 5.5, "under": 1.92, "over": 1.88},
-    ("wild", "jets"): {"away_ml": 1.80, "home_ml": 2.00, "total": 6.0, "under": 1.90, "over": 1.90},
-    ("kings", "ducks"): {"away_ml": 1.90, "home_ml": 1.90, "total": 5.5, "under": 1.91, "over": 1.89},
-}
-
-BETFAIR_ODDS_NHL = {
-    ("hurricanes", "avalanche"): {"away_ml": 2.42, "home_ml": 1.57, "total": 6.5, "under": 1.91, "over": 1.89},
-    ("maple_leafs", "golden_knights"): {"away_ml": 1.87, "home_ml": 1.93, "total": 6.0, "under": 1.89, "over": 1.91},
-    ("rangers", "oilers"): {"away_ml": 2.12, "home_ml": 1.70, "total": 6.5, "under": 1.90, "over": 1.90},
-    ("stars", "lightning"): {"away_ml": 1.97, "home_ml": 1.83, "total": 6.0, "under": 1.89, "over": 1.91},
-    ("panthers", "capitals"): {"away_ml": 1.62, "home_ml": 2.28, "total": 6.0, "under": 1.90, "over": 1.90},
-    ("bruins", "canadiens"): {"away_ml": 1.74, "home_ml": 2.08, "total": 5.5, "under": 1.91, "over": 1.89},
-    ("wild", "jets"): {"away_ml": 1.82, "home_ml": 1.98, "total": 6.0, "under": 1.89, "over": 1.91},
-    ("kings", "ducks"): {"away_ml": 1.92, "home_ml": 1.88, "total": 5.5, "under": 1.90, "over": 1.90},
-}
-
-DRAFTKINGS_ODDS_NHL = {
-    ("hurricanes", "avalanche"): {"away_ml": 2.45, "home_ml": 1.53, "total": 6.5, "under": 1.88, "over": 1.92},
-    ("maple_leafs", "golden_knights"): {"away_ml": 1.88, "home_ml": 1.92, "total": 6.0, "under": 1.88, "over": 1.92},
-    ("rangers", "oilers"): {"away_ml": 2.15, "home_ml": 1.68, "total": 6.5, "under": 1.88, "over": 1.92},
-    ("stars", "lightning"): {"away_ml": 1.98, "home_ml": 1.82, "total": 6.0, "under": 1.88, "over": 1.92},
-    ("panthers", "capitals"): {"away_ml": 1.65, "home_ml": 2.25, "total": 6.0, "under": 1.88, "over": 1.92},
-    ("bruins", "canadiens"): {"away_ml": 1.75, "home_ml": 2.05, "total": 5.5, "under": 1.88, "over": 1.92},
-    ("wild", "jets"): {"away_ml": 1.85, "home_ml": 1.95, "total": 6.0, "under": 1.88, "over": 1.92},
-    ("kings", "ducks"): {"away_ml": 1.95, "home_ml": 1.85, "total": 5.5, "under": 1.88, "over": 1.92},
-}
+# Note: Odds data is fetched from Odds API in real-time
+# Static hardcoded odds tables removed (never updated, always overridden by API calls)
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BASEBALL ODDS (BET365, BETFAIR, DRAFTKINGS)
-# ═══════════════════════════════════════════════════════════════════════════
-BET365_ODDS_MLB = {
-    ("yankees", "red_sox"): {"away_ml": 1.82, "home_ml": 2.00, "total": 8.5, "under": 1.90, "over": 1.90},
-    ("astros", "rangers"): {"away_ml": 1.95, "home_ml": 1.85, "total": 8.0, "under": 1.91, "over": 1.89},
-    ("dodgers", "padres"): {"away_ml": 1.72, "home_ml": 2.10, "total": 7.5, "under": 1.90, "over": 1.90},
-    ("braves", "mets"): {"away_ml": 1.88, "home_ml": 1.92, "total": 8.0, "under": 1.91, "over": 1.89},
-    ("cubs", "cardinals"): {"away_ml": 1.85, "home_ml": 1.95, "total": 7.5, "under": 1.90, "over": 1.90},
-    ("brewers", "pirates"): {"away_ml": 1.75, "home_ml": 2.05, "total": 8.5, "under": 1.91, "over": 1.89},
-    ("mariners", "athletics"): {"away_ml": 2.15, "home_ml": 1.68, "total": 7.0, "under": 1.90, "over": 1.90},
-    ("phillies", "nationals"): {"away_ml": 1.78, "home_ml": 2.02, "total": 8.0, "under": 1.91, "over": 1.89},
-}
-
-BETFAIR_ODDS_MLB = {
-    ("yankees", "red_sox"): {"away_ml": 1.84, "home_ml": 1.98, "total": 8.5, "under": 1.89, "over": 1.91},
-    ("astros", "rangers"): {"away_ml": 1.97, "home_ml": 1.83, "total": 8.0, "under": 1.90, "over": 1.90},
-    ("dodgers", "padres"): {"away_ml": 1.74, "home_ml": 2.08, "total": 7.5, "under": 1.89, "over": 1.91},
-    ("braves", "mets"): {"away_ml": 1.90, "home_ml": 1.90, "total": 8.0, "under": 1.89, "over": 1.91},
-    ("cubs", "cardinals"): {"away_ml": 1.87, "home_ml": 1.93, "total": 7.5, "under": 1.89, "over": 1.91},
-    ("brewers", "pirates"): {"away_ml": 1.77, "home_ml": 2.03, "total": 8.5, "under": 1.90, "over": 1.90},
-    ("mariners", "athletics"): {"away_ml": 2.17, "home_ml": 1.66, "total": 7.0, "under": 1.89, "over": 1.91},
-    ("phillies", "nationals"): {"away_ml": 1.80, "home_ml": 2.00, "total": 8.0, "under": 1.89, "over": 1.91},
-}
-
-DRAFTKINGS_ODDS_MLB = {
-    ("yankees", "red_sox"): {"away_ml": 1.86, "home_ml": 1.96, "total": 8.5, "under": 1.88, "over": 1.92},
-    ("astros", "rangers"): {"away_ml": 1.98, "home_ml": 1.82, "total": 8.0, "under": 1.88, "over": 1.92},
-    ("dodgers", "padres"): {"away_ml": 1.76, "home_ml": 2.06, "total": 7.5, "under": 1.88, "over": 1.92},
-    ("braves", "mets"): {"away_ml": 1.92, "home_ml": 1.88, "total": 8.0, "under": 1.88, "over": 1.92},
-    ("cubs", "cardinals"): {"away_ml": 1.89, "home_ml": 1.91, "total": 7.5, "under": 1.88, "over": 1.92},
-    ("brewers", "pirates"): {"away_ml": 1.79, "home_ml": 2.01, "total": 8.5, "under": 1.88, "over": 1.92},
-    ("mariners", "athletics"): {"away_ml": 2.20, "home_ml": 1.64, "total": 7.0, "under": 1.88, "over": 1.92},
-    ("phillies", "nationals"): {"away_ml": 1.82, "home_ml": 1.98, "total": 8.0, "under": 1.88, "over": 1.92},
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
-# NBA TEAMS STATS (2025-2026 Season) - Advanced Metrics
-# ═══════════════════════════════════════════════════════════════════════════
-NBA_TEAM_STATS = {
-    "celtics": {"strength": 97, "ppg": 118.5, "pa": 108.2, "wins": 62, "losses": 20, "gp": 82},
-    "nuggets": {"strength": 95, "ppg": 116.8, "pa": 109.5, "wins": 61, "losses": 21, "gp": 82},
-    "warriors": {"strength": 93, "ppg": 115.2, "pa": 110.1, "wins": 59, "losses": 23, "gp": 82},
-    "bucks": {"strength": 92, "ppg": 117.3, "pa": 111.2, "wins": 58, "losses": 24, "gp": 82},
-    "suns": {"strength": 91, "ppg": 116.5, "pa": 112.3, "wins": 57, "losses": 25, "gp": 82},
-    "lakers": {"strength": 89, "ppg": 114.8, "pa": 113.5, "wins": 55, "losses": 27, "gp": 82},
-    "heat": {"strength": 87, "ppg": 113.2, "pa": 114.1, "wins": 52, "losses": 30, "gp": 82},
-    "mavericks": {"strength": 88, "ppg": 115.5, "pa": 113.2, "wins": 54, "losses": 28, "gp": 82},
-    "76ers": {"strength": 86, "ppg": 113.8, "pa": 114.5, "wins": 51, "losses": 31, "gp": 82},
-    "kings": {"strength": 84, "ppg": 112.5, "pa": 115.2, "wins": 49, "losses": 33, "gp": 82},
-    "nets": {"strength": 82, "ppg": 111.2, "pa": 116.3, "wins": 47, "losses": 35, "gp": 82},
-    "cavaliers": {"strength": 85, "ppg": 113.5, "pa": 114.2, "wins": 50, "losses": 32, "gp": 82},
-    "grizzlies": {"strength": 83, "ppg": 112.1, "pa": 115.8, "wins": 48, "losses": 34, "gp": 82},
-    "raptors": {"strength": 81, "ppg": 110.8, "pa": 116.5, "wins": 46, "losses": 36, "gp": 82},
-    "bulls": {"strength": 80, "ppg": 110.2, "pa": 117.1, "wins": 45, "losses": 37, "gp": 82},
-    "clippers": {"strength": 86, "ppg": 113.9, "pa": 114.1, "wins": 51, "losses": 31, "gp": 82},
-    "knicks": {"strength": 84, "ppg": 112.8, "pa": 115.3, "wins": 49, "losses": 33, "gp": 82},
-    "blazers": {"strength": 79, "ppg": 109.5, "pa": 117.8, "wins": 44, "losses": 38, "gp": 82},
-    "pelicans": {"strength": 82, "ppg": 111.9, "pa": 116.2, "wins": 47, "losses": 35, "gp": 82},
-    "spurs": {"strength": 78, "ppg": 109.1, "pa": 118.2, "wins": 43, "losses": 39, "gp": 82},
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
-# BASKETBALL ODDS (BET365, BETFAIR, DRAFTKINGS)
-# ═══════════════════════════════════════════════════════════════════════════
-BET365_ODDS_NBA = {
-    ("celtics", "warriors"): {"away_ml": 1.60, "home_ml": 2.30, "total": 217.5, "under": 1.91, "over": 1.89},
-    ("nuggets", "lakers"): {"away_ml": 1.75, "home_ml": 2.05, "total": 220.0, "under": 1.91, "over": 1.89},
-    ("suns", "bucks"): {"away_ml": 1.88, "home_ml": 1.92, "total": 218.5, "under": 1.90, "over": 1.90},
-    ("heat", "mavericks"): {"away_ml": 2.10, "home_ml": 1.70, "total": 215.0, "under": 1.91, "over": 1.89},
-    ("76ers", "kings"): {"away_ml": 1.95, "home_ml": 1.85, "total": 216.0, "under": 1.90, "over": 1.90},
-    ("nets", "cavaliers"): {"away_ml": 2.20, "home_ml": 1.65, "total": 214.5, "under": 1.91, "over": 1.89},
-    ("grizzlies", "raptors"): {"away_ml": 1.72, "home_ml": 2.10, "total": 212.0, "under": 1.91, "over": 1.89},
-    ("clippers", "bulls"): {"away_ml": 1.65, "home_ml": 2.15, "total": 213.0, "under": 1.90, "over": 1.90},
-}
-
-BETFAIR_ODDS_NBA = {
-    ("celtics", "warriors"): {"away_ml": 1.62, "home_ml": 2.28, "total": 217.5, "under": 1.89, "over": 1.91},
-    ("nuggets", "lakers"): {"away_ml": 1.77, "home_ml": 2.03, "total": 220.0, "under": 1.89, "over": 1.91},
-    ("suns", "bucks"): {"away_ml": 1.90, "home_ml": 1.90, "total": 218.5, "under": 1.89, "over": 1.91},
-    ("heat", "mavericks"): {"away_ml": 2.12, "home_ml": 1.68, "total": 215.0, "under": 1.89, "over": 1.91},
-    ("76ers", "kings"): {"away_ml": 1.97, "home_ml": 1.83, "total": 216.0, "under": 1.89, "over": 1.91},
-    ("nets", "cavaliers"): {"away_ml": 2.22, "home_ml": 1.63, "total": 214.5, "under": 1.89, "over": 1.91},
-    ("grizzlies", "raptors"): {"away_ml": 1.74, "home_ml": 2.08, "total": 212.0, "under": 1.89, "over": 1.91},
-    ("clippers", "bulls"): {"away_ml": 1.67, "home_ml": 2.13, "total": 213.0, "under": 1.89, "over": 1.91},
-}
-
-DRAFTKINGS_ODDS_NBA = {
-    ("celtics", "warriors"): {"away_ml": 1.64, "home_ml": 2.26, "total": 217.5, "under": 1.88, "over": 1.92},
-    ("nuggets", "lakers"): {"away_ml": 1.79, "home_ml": 2.01, "total": 220.0, "under": 1.88, "over": 1.92},
-    ("suns", "bucks"): {"away_ml": 1.92, "home_ml": 1.88, "total": 218.5, "under": 1.88, "over": 1.92},
-    ("heat", "mavericks"): {"away_ml": 2.15, "home_ml": 1.66, "total": 215.0, "under": 1.88, "over": 1.92},
-    ("76ers", "kings"): {"away_ml": 2.00, "home_ml": 1.80, "total": 216.0, "under": 1.88, "over": 1.92},
-    ("nets", "cavaliers"): {"away_ml": 2.25, "home_ml": 1.61, "total": 214.5, "under": 1.88, "over": 1.92},
-    ("grizzlies", "raptors"): {"away_ml": 1.76, "home_ml": 2.06, "total": 212.0, "under": 1.88, "over": 1.92},
-    ("clippers", "bulls"): {"away_ml": 1.70, "home_ml": 2.10, "total": 213.0, "under": 1.88, "over": 1.92},
-}
-
-# ═══════════════════════════════════════════════════════════════════════════
-# FONCTIONS POUR CHARGER LES DONNÉES NBA EN DIRECT
+# FONCTIONS POUR CHARGER LES DONNÉES EN DIRECT
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_nba_stats_real_time():
