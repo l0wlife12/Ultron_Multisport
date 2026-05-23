@@ -4403,6 +4403,10 @@ _notified_starts = set()
 _notified_pronostics = {}
 PRONO_RENOTIFY_HOURS = 24  # Ne renvoyer le même pick que après 24h
 
+# Compteur quotidien des picks MLB envoyés (pour limiter à 5/jour)
+_mlb_picks_sent_today = {"date": None, "count": 0}
+MLB_PICKS_MAX_PER_DAY = 5
+
 MOTIVATION_MESSAGES = [
     "🔥 Every expert was once a beginner. Trust the process, trust the data.",
     "💎 Discipline beats motivation every single day. Show up, analyze, win.",
@@ -4645,6 +4649,12 @@ async def auto_send_pronostics(context):
     now_utc = datetime.datetime.now(pytz.utc)
     date_key = quebec_time.strftime('%Y-%m-%d')
 
+    # ── Réinitialiser le compteur MLB si on est à un nouveau jour ──
+    global _mlb_picks_sent_today
+    if _mlb_picks_sent_today["date"] != date_key:
+        _mlb_picks_sent_today = {"date": date_key, "count": 0}
+        logger.info(f"🔄 Compteur MLB reinitialisé pour le jour: {date_key}")
+
     logger.info(f"🔍 auto_send_pronostics: vérification des matchs... (Québec: {quebec_time.strftime('%H:%M')}, UTC: {now_utc.strftime('%H:%M')})")
 
     sports_config = [
@@ -4789,6 +4799,11 @@ async def auto_send_pronostics(context):
     all_picks = []
     for sport_key, emoji, away, home, match_time, match_is_live in upcoming_matches:
         try:
+            # ── Vérifier la limite MLB avant de générer le pick ──
+            if sport_key == "mlb" and _mlb_picks_sent_today["count"] >= MLB_PICKS_MAX_PER_DAY:
+                logger.warning(f"🚫 MLB BLOQUÉ: {away} @ {home} - limite quotidienne atteinte ({MLB_PICKS_MAX_PER_DAY} max)")
+                continue
+            
             if sport_key == "nba":
                 pred = generate_prediction_nba(away, home)
             elif sport_key == "nhl":
@@ -4900,6 +4915,12 @@ async def auto_send_pronostics(context):
                             espn_tag = " 🏥⚠️"
 
                 late_tag = ""  # Matchs en cours désactivés
+                
+                # ── Incrémenter compteur MLB ──
+                if sport_key == "mlb":
+                    _mlb_picks_sent_today["count"] += 1
+                    logger.info(f"📊 MLB pick ajouté: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY}")
+                
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}{late_tag}",
                     "heure": qc_time.strftime('%H:%M'),
@@ -4950,19 +4971,10 @@ async def auto_send_pronostics(context):
             all_picks = filtered
             logger.info(f"🧠 Brain filter: {len(all_picks)} pick(s) retenus")
 
-    # ── Limitation MLB : max 5 picks par jour ──────────────────────────────
-    mlb_max = 5
+    # ── Vérification: MLB limité à {MLB_PICKS_MAX_PER_DAY} par jour ──────
     mlb_picks = [p for p in all_picks if "⚾" in p["label"]]
-    nba_picks = [p for p in all_picks if "🏀" in p["label"]]
-    nhl_picks = [p for p in all_picks if "🏒" in p["label"]]
-    
-    if len(mlb_picks) > mlb_max:
-        mlb_picks_limited = mlb_picks[:mlb_max]
-        mlb_rejected_count = len(mlb_picks) - mlb_max
-        logger.info(f"🚫 MLB limitée: {mlb_max} picks envoyés, {mlb_rejected_count} refusés (trop nombreux)")
-        all_picks = mlb_picks_limited + nba_picks + nhl_picks
-    else:
-        logger.info(f"⚾ MLB: {len(mlb_picks)} pick(s) (limite: {mlb_max})")
+    if mlb_picks:
+        logger.info(f"⚾ MLB: {len(mlb_picks)} pick(s) dans ce batch (limité à {MLB_PICKS_MAX_PER_DAY}/jour globalement)")
 
     heure_qc = quebec_time.strftime('%H:%M')
 
