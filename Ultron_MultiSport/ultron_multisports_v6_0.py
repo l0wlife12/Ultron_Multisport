@@ -4695,10 +4695,7 @@ async def auto_send_pronostics(context):
     all_picks = []
     for sport_key, emoji, away, home, match_time, match_is_live in upcoming_matches:
         try:
-            # ── Vérifier la limite MLB avant de générer le pick ──
-            if sport_key == "mlb" and _mlb_picks_sent_today["count"] >= MLB_PICKS_MAX_PER_DAY:
-                logger.warning(f"🚫 MLB BLOQUÉ: {away} @ {home} - limite quotidienne atteinte ({MLB_PICKS_MAX_PER_DAY} max)")
-                continue
+            # ── Note: MLB, generate ALL predictions, then filter to top 5 later ──
             
             if sport_key == "nba":
                 pred = generate_prediction_nba(away, home)
@@ -4812,11 +4809,6 @@ async def auto_send_pronostics(context):
 
                 late_tag = ""  # Matchs en cours désactivés
                 
-                # ── Incrémenter compteur MLB ──
-                if sport_key == "mlb":
-                    _mlb_picks_sent_today["count"] += 1
-                    logger.info(f"📊 MLB pick ajouté: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY}")
-                
                 all_picks.append({
                     "label": f"{emoji} {away} @ {home}{late_tag}",
                     "heure": qc_time.strftime('%H:%M'),
@@ -4853,6 +4845,23 @@ async def auto_send_pronostics(context):
         return
 
     all_picks.sort(key=lambda x: x['confidence'], reverse=True)
+
+    # ── FILTER MLB TO TOP 5 BEST PICKS ONLY ──────────────────────────────
+    # Separate MLB picks from others, then keep only best 5 MLB picks
+    nba_nhl_picks = [p for p in all_picks if "🏀" in p["label"] or "🏒" in p["label"]]
+    mlb_picks = [p for p in all_picks if "⚾" in p["label"]]
+    
+    if len(mlb_picks) > MLB_PICKS_MAX_PER_DAY:
+        # Sort MLB by confidence and keep only top 5
+        mlb_picks = sorted(mlb_picks, key=lambda x: x['confidence'], reverse=True)[:MLB_PICKS_MAX_PER_DAY]
+        logger.info(f"⚾ MLB: {len(mlb_picks)} best picks selected from daily pool (limit: {MLB_PICKS_MAX_PER_DAY}/day)")
+        all_picks = nba_nhl_picks + mlb_picks
+        all_picks.sort(key=lambda x: x['confidence'], reverse=True)
+    else:
+        mlb_count = len([p for p in all_picks if "⚾" in p["label"]])
+        if mlb_count > 0:
+            logger.info(f"⚾ MLB: {mlb_count} pick(s) available")
+    # ────────────────────────────────────────────────────────────────────
 
     # ── Filtrage Brain : retire les picks sous le seuil appris ───────────
     if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
@@ -5011,6 +5020,14 @@ async def auto_send_pronostics(context):
         msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
         msg_vip += "     Bonne chance! 🍀"
+        
+        # ── Update MLB daily counter for picks being sent ──
+        global _mlb_picks_sent_today
+        mlb_sent_count = len([p for p in all_picks if "⚾" in p["label"]])
+        _mlb_picks_sent_today["count"] = mlb_sent_count
+        if mlb_sent_count > 0:
+            logger.info(f"⚾ MLB counter updated: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY} picks being sent")
+        
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
             logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U) + Parlays")
