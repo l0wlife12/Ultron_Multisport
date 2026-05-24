@@ -4778,7 +4778,6 @@ async def auto_send_pronostics(context):
                 
                 # ── Incrémenter compteur MLB ──
                 if sport_key == "mlb":
-                    global _mlb_picks_sent_today
                     _mlb_picks_sent_today["count"] += 1
                     logger.info(f"📊 MLB pick ajouté: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY}")
                 
