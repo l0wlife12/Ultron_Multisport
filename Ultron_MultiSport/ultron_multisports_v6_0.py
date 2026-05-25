@@ -5022,7 +5022,6 @@ async def auto_send_pronostics(context):
         msg_vip += "     Bonne chance! 🍀"
         
         # ── Update MLB daily counter for picks being sent ──
-        global _mlb_picks_sent_today
         mlb_sent_count = len([p for p in all_picks if "⚾" in p["label"]])
         _mlb_picks_sent_today["count"] = mlb_sent_count
         if mlb_sent_count > 0:
