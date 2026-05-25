@@ -1031,11 +1031,7 @@ def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
     key_forward = (away_clean, home_clean)
     key_reverse = (home_clean, away_clean)
     
-    bookmakers = [
-        ("BET365", BET365_ODDS_NHL),
-        ("BETFAIR", BETFAIR_ODDS_NHL),
-        ("DRAFTKINGS", DRAFTKINGS_ODDS_NHL),
-    ]
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
     
     # Cotes par défaut basées sur la force relative  
     _nhl_ts = get_dynamic_team_stats('NHL')
@@ -1081,11 +1077,7 @@ def get_best_odds_mlb(away_team: str, home_team: str) -> dict:
     key_forward = (away_clean, home_clean)
     key_reverse = (home_clean, away_clean)
     
-    bookmakers = [
-        ("BET365", BET365_ODDS_MLB),
-        ("BETFAIR", BETFAIR_ODDS_MLB),
-        ("DRAFTKINGS", DRAFTKINGS_ODDS_MLB),
-    ]
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
     
     # Cotes par défaut basées sur la force relative (fallback)
     _mlb_ts = get_dynamic_team_stats('MLB')
@@ -1129,11 +1121,7 @@ def get_best_odds_nba(away_team: str, home_team: str) -> dict:
     key_forward = (away_clean, home_clean)
     key_reverse = (home_clean, away_clean)
     
-    bookmakers = [
-        ("BET365", BET365_ODDS_NBA),
-        ("BETFAIR", BETFAIR_ODDS_NBA),
-        ("DRAFTKINGS", DRAFTKINGS_ODDS_NBA),
-    ]
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
     
     # Cotes par défaut basées sur la force relative  
     _nba_ts = get_dynamic_team_stats('NBA')
