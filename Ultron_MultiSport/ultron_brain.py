@@ -38,10 +38,10 @@ ANALYSIS_FILE   = os.path.join(_BASE, "brain_analysis.json")
 # ── Seuils par défaut (avant apprentissage) ───────────────────────────────────
 DEFAULT_THRESHOLDS = {
     "min_confidence": {
-        "NBA": 58,
-        "NHL": 58,
-        "NFL": 58,
-        "default": 58,
+        "NBA": 52,
+        "NHL": 52,
+        "NFL": 52,
+        "default": 52,
     },
     "min_ev_pct": {
         "NBA": 0.0,
