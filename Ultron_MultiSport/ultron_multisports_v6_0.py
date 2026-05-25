@@ -3799,6 +3799,7 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les pronostics NBA"""
     try:
+        await update.message.reply_text("🔄 [DEBUG] Chargement des matchs NBA...")
         matches = get_live_matches_nba()
         quebec_time = get_quebec_time()
         
