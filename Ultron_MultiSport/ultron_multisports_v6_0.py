@@ -3807,6 +3807,7 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         predictions = []
+        errors = []
         for away, home in matches:
             try:
                 logger.debug(f"Generating prediction for NBA: {away} @ {home}")
@@ -3814,12 +3815,14 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.debug(f"✅ Prediction generated for {away} @ {home}")
                 predictions.append((away, home, pred))
             except Exception as e:
-                logger.error(f"💥 Critical error in NBA prediction {away} @ {home}:", exc_info=True)
-                logger.error(f"   Error details: {str(e)}")
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
                 continue
         
         if not predictions:
-            await update.message.reply_text("⚠️ Impossible de générer les prédictions NBA")
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NBA\n\n🔍 Erreurs:\n{error_details}")
             return
         
         buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
@@ -3878,16 +3881,20 @@ async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         predictions = []
+        errors = []
         for away, home in matches:
             try:
                 pred = generate_prediction_nhl(away, home)
                 predictions.append((away, home, pred))
             except Exception as e:
-                logger.warning(f"⚠️ Erreur prédiction {away} @ {home}: {e}")
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
                 continue
         
         if not predictions:
-            await update.message.reply_text("⚠️ Impossible de générer les prédictions NHL")
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NHL\n\n🔍 Erreurs:\n{error_details}")
             return
         
         buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
@@ -3942,16 +3949,20 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         predictions = []
+        errors = []
         for away, home in matches:
             try:
                 pred = generate_prediction_mlb(away, home)
                 predictions.append((away, home, pred))
             except Exception as e:
-                logger.warning(f"⚠️ Erreur prédiction {away} @ {home}: {e}")
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
                 continue
         
         if not predictions:
-            await update.message.reply_text("⚠️ Impossible de générer les prédictions MLB")
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions MLB\n\n🔍 Erreurs:\n{error_details}")
             return
         
         buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
