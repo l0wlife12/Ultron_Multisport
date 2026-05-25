@@ -3809,10 +3809,13 @@ async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
         predictions = []
         for away, home in matches:
             try:
+                logger.debug(f"Generating prediction for NBA: {away} @ {home}")
                 pred = generate_prediction_nba(away, home)
+                logger.debug(f"✅ Prediction generated for {away} @ {home}")
                 predictions.append((away, home, pred))
             except Exception as e:
-                logger.warning(f"⚠️ Erreur prédiction {away} @ {home}: {e}")
+                logger.error(f"💥 Critical error in NBA prediction {away} @ {home}:", exc_info=True)
+                logger.error(f"   Error details: {str(e)}")
                 continue
         
         if not predictions:
