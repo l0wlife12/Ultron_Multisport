@@ -7,6 +7,7 @@ Multi-league sports betting analysis system
 VERSION_BUILD = "2026-05-17_MLB_FIX"
 """
 
+import math
 import os
 import sys
 import logging
@@ -1023,6 +1024,18 @@ def find_team_nba(name_input: str) -> str | None:
     logger.warning(f"⚠️ Équipe NBA non trouvée: {name_input}")
     return None
 
+# Dicts vides sécurisés — les vraies cotes viennent de l'Odds API en temps réel.
+# Ces variables existent uniquement pour éviter un NameError si l'API est indisponible.
+BET365_ODDS_NHL     = {}
+BETFAIR_ODDS_NHL    = {}
+DRAFTKINGS_ODDS_NHL = {}
+BET365_ODDS_MLB     = {}
+BETFAIR_ODDS_MLB    = {}
+DRAFTKINGS_ODDS_MLB = {}
+BET365_ODDS_NBA     = {}
+BETFAIR_ODDS_NBA    = {}
+DRAFTKINGS_ODDS_NBA = {}
+
 def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
     """LINE SHOPPING pour NHL"""
     away_clean = find_team_nhl(away_team) or away_team.lower()
@@ -1701,18 +1714,6 @@ def fetch_mlb_live_stats() -> dict:
     except Exception as e:
         logger.error(f"❌ fetch_mlb_live_stats error: {e}")
         return MLB_TEAM_STATS
-
-
-def get_dynamic_team_stats(sport: str) -> dict:
-    """Retourne les stats dynamiques du sport (live si dispo, fallback static)"""
-    if sport == "MLB":
-        return fetch_mlb_live_stats()
-    elif sport == "NBA":
-        return NBA_TEAM_STATS
-    elif sport == "NHL":
-        return NHL_TEAM_STATS
-    else:
-        return {}
 
 
 def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
@@ -3625,6 +3626,35 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         "ou_status": ou_status,
     }
 
+import time as _time
+from functools import wraps
+
+_CMD_LAST_CALL: dict = {}
+_CMD_COOLDOWN_SECONDS = 15
+
+def rate_limit(cooldown: int = _CMD_COOLDOWN_SECONDS):
+    """
+    Décorateur anti-spam pour les commandes Telegram coûteuses.
+    Bloque les ré-appels trop rapides du même utilisateur.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update, context):
+            user_id = update.effective_user.id if update.effective_user else 0
+            key = f"{func.__name__}_{user_id}"
+            now = _time.monotonic()
+            last = _CMD_LAST_CALL.get(key, 0)
+            if now - last < cooldown:
+                remaining = int(cooldown - (now - last))
+                await update.message.reply_text(
+                    f"⏳ Attends encore {remaining}s avant de relancer cette commande."
+                )
+                return
+            _CMD_LAST_CALL[key] = now
+            return await func(update, context)
+        return wrapper
+    return decorator
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Menu principal"""
     msg = "🤖 ULTRON v6.0 - MULTISPORTS\n"
@@ -3760,6 +3790,7 @@ async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ nba_matches: {e}")
         await update.message.reply_text(f"❌ Erreur NBA: {e}")
 
+@rate_limit(30)
 async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les pronostics pour un sport: /pronostics nba/nhl/mlb"""
     if not context.args:
@@ -4165,6 +4196,7 @@ async def all_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ Erreur /all_props: {e}")
         await update.message.reply_text(f"❌ Erreur: {e}")
 
+@rate_limit(60)
 async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les props de tous les matchs NBA du jour"""
     try:
@@ -4710,7 +4742,7 @@ async def auto_send_pronostics(context):
             # ── Enrichir le scoring runline pour MLB si données ESPN disponibles ──
             if sport_key == "mlb" and pred and MLB_RUNLINE_AVAILABLE:
                 try:
-                    game_id = event.get('id', '')  # ID ESPN du match
+                    game_id = ""  # game_id non disponible dans ce scope
                     pred = enrich_mlb_runline_score(away, home, game_id, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ MLB runline enrichment failed: {e}")
@@ -4729,7 +4761,7 @@ async def auto_send_pronostics(context):
                 try:
                     away_abbr = find_team_nhl(away) or away.lower()
                     home_abbr = find_team_nhl(home) or home.lower()
-                    game_id = event.get('id', '')  # ID ESPN du match
+                    game_id = ""  # game_id non disponible dans ce scope
                     pred = enrich_nhl_puckline_score(home, away, home_abbr, away_abbr, game_id, pred)
                 except Exception as e:
                     logger.warning(f"⚠️ NHL puckline enrichment failed: {e}")
@@ -5387,6 +5419,7 @@ async def auto_brain_analysis(context):
         logger.error(f"❌ auto_brain_analysis: {e}")
 
 
+@rate_limit(60)
 async def cmd_picks(update, context):
     """/picks — génère les picks du jour via moteur Elo + No-Vig + ESPN"""
     if not ULTRON_V2_AVAILABLE:
