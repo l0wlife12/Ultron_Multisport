@@ -210,6 +210,13 @@ try:
 except ImportError:
     MLB_MONEYLINE_ADVANCED_AVAILABLE = False
 
+# NBA Player Props — ESPN stats L10 + Odds API player_points market
+try:
+    from nba_player_props import run_props_analysis
+    NBA_PROPS_AVAILABLE = True
+except ImportError:
+    NBA_PROPS_AVAILABLE = False
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -4197,127 +4204,70 @@ async def all_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erreur: {e}")
 
 @rate_limit(60)
+@rate_limit(60)
 async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Affiche les props de tous les matchs NBA du jour"""
+    """Affiche les props joueurs NBA du jour via nba_player_props"""
     try:
-        await update.message.reply_text("⏳ Compilation des props du jour...")
-        
-        # Récupérer les matchs NBA du jour
-        matches = get_live_matches_nba()
-        
-        if not matches:
-            await update.message.reply_text("❌ Aucun match NBA aujourd'hui")
+        await update.message.reply_text("⏳ Analyse des props joueurs NBA en cours...")
+
+        if not NBA_PROPS_AVAILABLE:
+            await update.message.reply_text("❌ Module nba_player_props non disponible.")
             return
-        
+
+        picks = run_props_analysis(send=False)
+
+        if not picks:
+            await update.message.reply_text("❌ Aucun prop joueur avec valeur détectée aujourd'hui.")
+            return
+
         quebec_time = get_quebec_time()
-        msg = f"🏀 PROPS NBA DU JOUR\n"
-        msg += f"📅 {quebec_time.strftime('%d/%m/%Y %H:%M')}\n"
-        msg += "═" * 50 + "\n\n"
-        
-        total_picks = 0
-        
-        # Analyser chaque match
-        for match_num, (away_team, home_team) in enumerate(matches, 1):
-            msg += f"🎯 MATCH {match_num}: {away_team.upper()} @ {home_team.upper()}\n"
-            msg += "━" * 50 + "\n"
-            
-            # Récupérer les joueurs des 2 équipes
-            home_players = get_all_players_by_team(home_team)
-            away_players = get_all_players_by_team(away_team)
-            
-            match_picks = []
-            
-            # Analyser joueurs domicile
-            for player in home_players:
-                props = get_player_props(player)
-                if props and 'points' in props['props']:
-                    predicted_pts = predict_player_points(
-                        player_name=player,
-                        opponent_team=away_team,
-                        home_away='home'
-                    )
-                    
-                    if predicted_pts:
-                        analysis = analyze_player_props_ou(
-                            predicted_pts,
-                            props['props']['points']['line'],
-                            props['props']['points'],
-                            min_threshold=0.3
-                        )
-                        
-                        if analysis['side'] != 'none':
-                            match_picks.append({
-                                'player': player,
-                                'analysis': analysis,
-                                'predicted': predicted_pts,
-                                'line': props['props']['points']['line'],
-                                'odds': props['props']['points']
-                            })
-            
-            # Analyser joueurs extérieur
-            for player in away_players:
-                props = get_player_props(player)
-                if props and 'points' in props['props']:
-                    predicted_pts = predict_player_points(
-                        player_name=player,
-                        opponent_team=home_team,
-                        home_away='away'
-                    )
-                    
-                    if predicted_pts:
-                        analysis = analyze_player_props_ou(
-                            predicted_pts,
-                            props['props']['points']['line'],
-                            props['props']['points'],
-                            min_threshold=0.3
-                        )
-                        
-                        if analysis['side'] != 'none':
-                            match_picks.append({
-                                'player': player,
-                                'analysis': analysis,
-                                'predicted': predicted_pts,
-                                'line': props['props']['points']['line'],
-                                'odds': props['props']['points']
-                            })
-            
-            # Afficher les picks triés par confiance
-            if match_picks:
-                # Trier: HIGH confiance en premier, puis par value
-                match_picks.sort(
-                    key=lambda x: (
-                        {'high': 0, 'medium': 1, 'low': 2}[x['analysis']['confidence']],
-                        -x['analysis']['value_margin']
-                    )
+        buy_picks = [p for p in picks if p["status"] == "BUY"]
+        mon_picks = [p for p in picks if p["status"] == "MONITORING"]
+
+        lines = [
+            "🌟 *ULTRON — PROPS JOUEURS NBA*",
+            f"🕐 {quebec_time.strftime('%H:%M')} (Québec) | Top 15 stars analysées",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if buy_picks:
+            lines.append(f"\n✅ *BUY ({len(buy_picks)} pick{'s' if len(buy_picks) > 1 else ''})*\n")
+            for p in buy_picks:
+                side_emoji = "⬆️" if p["side"] == "OVER" else "⬇️"
+                home_str   = "🏠" if p["is_home"] else "✈️"
+                b2b_str    = " ⚠️ B2B" if p["is_b2b"] else ""
+                source_str = "🟢" if p["source"] == "ODDS_API" else "📊"
+                lines.append(
+                    f"🔥 *{p['player']}* {home_str}{b2b_str}\n"
+                    f"   {side_emoji} *{p['side']} {p['book_line']} pts* @ `{p['bet_odds']:.2f}`\n"
+                    f"   📊 Prédit: *{p['predicted_pts']}* | Saison: {p['season_avg']} | L10: {p['l10_avg']}\n"
+                    f"   🎯 Hit rate L10: *{p['hit_rate_l10']:.0%}* | EV: *{p['ev']*100:+.1f}%*\n"
+                    f"   💡 Confiance: *{p['confidence']}/100* {source_str}\n"
                 )
-                
-                for pick in match_picks[:4]:  # Max 4 picks par match
-                    player = pick['player']
-                    analysis = pick['analysis']
-                    
-                    confidence_emoji = {
-                        'high': '🔥',
-                        'medium': '⚡',
-                        'low': '📌'
-                    }[analysis['confidence']]
-                    
-                    side_text = 'OVER' if analysis['side'] == 'over' else 'UNDER'
-                    odds = pick['odds']['over'] if analysis['side'] == 'over' else pick['odds']['under']
-                    
-                    msg += f"{confidence_emoji} {player}\n"
-                    msg += f"   {side_text} {analysis['line']} | Pred: {analysis['predicted_points']:.1f}\n"
-                    msg += f"   +{analysis['value_margin']:.1f}% @ {odds}\n"
-                    total_picks += 1
-            else:
-                msg += "   ➡️ Pas de value identifiée\n"
-            
-            msg += "\n"
-        
-        msg += "═" * 50 + "\n"
-        msg += f"📊 Total: {total_picks} picks avec value\n"
-        msg += "💡 Utilise /player [nom] pour plus de détails"
-        
-        await update.message.reply_text(msg)
+
+        if mon_picks:
+            lines.append(f"\n👀 *MONITORING ({len(mon_picks)})*\n")
+            for p in mon_picks[:3]:
+                side_emoji = "⬆️" if p["side"] == "OVER" else "⬇️"
+                lines.append(
+                    f"✅ *{p['player']}* — {side_emoji} {p['side']} {p['book_line']} "
+                    f"| Prédit: {p['predicted_pts']} | Conf: {p['confidence']}/100\n"
+                )
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(
+            f"📊 {len(picks)} props | {len(buy_picks)} BUY | {len(mon_picks)} MONITORING"
+        )
+
+        msg = "\n".join(lines)
+
+        # Envoyer en chunks si trop long
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"❌ Erreur /daily_props: {e}")
         await update.message.reply_text(f"❌ Erreur: {e}")
