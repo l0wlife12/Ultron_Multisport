@@ -217,6 +217,13 @@ try:
 except ImportError:
     NBA_PROPS_AVAILABLE = False
 
+# Totaux O/U multi-sport — ESPN stats + Odds API totals market
+try:
+    from totals_analyzer import run_totals_analysis, format_totals_message
+    TOTALS_AVAILABLE = True
+except ImportError:
+    TOTALS_AVAILABLE = False
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -4205,6 +4212,52 @@ async def all_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @rate_limit(60)
 @rate_limit(60)
+async def cmd_totals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyse les totaux O/U NBA/NHL/MLB via totals_analyzer"""
+    try:
+        await update.message.reply_text("⏳ Analyse des totaux O/U en cours (NBA + NHL + MLB)...")
+
+        if not TOTALS_AVAILABLE:
+            await update.message.reply_text("❌ Module totals_analyzer non disponible.")
+            return
+
+        # Filtrer les sports selon args optionnels: /totals nba  /totals nhl mlb
+        args = context.args or []
+        if args:
+            sports = [a.upper() for a in args if a.upper() in ("NBA", "NHL", "MLB")]
+            if not sports:
+                await update.message.reply_text(
+                    "⚠️ Sports valides: NBA, NHL, MLB\n"
+                    "Exemple: /totals nba nhl"
+                )
+                return
+        else:
+            sports = ["NBA", "NHL", "MLB"]
+
+        picks = run_totals_analysis(sports=sports, send=False)
+
+        if not picks:
+            await update.message.reply_text(
+                f"❌ Aucun pick O/U avec EV positif aujourd'hui "
+                f"({', '.join(sports)})."
+            )
+            return
+
+        msg = format_totals_message(picks)
+
+        # Envoyer en chunks si trop long
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur /totals: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+
+@rate_limit(60)
 async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les props joueurs NBA du jour via nba_player_props"""
     try:
@@ -5651,6 +5704,7 @@ def main():
     app.add_handler(CommandHandler("props_match", match_props))
     app.add_handler(CommandHandler("all_props", all_props))
     app.add_handler(CommandHandler("daily_props", daily_props))
+    app.add_handler(CommandHandler("totals", cmd_totals))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", cmd_stats))
     app.add_handler(CommandHandler("recap", cmd_recap))
