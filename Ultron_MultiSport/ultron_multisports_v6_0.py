@@ -292,7 +292,6 @@ _ODDS_API_CACHE_TTL = 14400  # 4 heures
 _ODDS_API_SPORT_KEYS = {
     "nba":     "basketball_nba",
     "nhl":     "icehockey_nhl",
-    "mlb":     "baseball_mlb",
     "mondial": "soccer_fifa_world_cup",
 }
 
@@ -3914,7 +3913,7 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "Exemple:\n"
         msg += "/pronostics nba - Pronostics NBA\n"
         msg += "/pronostics nhl - Pronostics NHL 🏒\n"
-        msg += "/pronostics mlb - Pronostics MLB ⚾"
+        msg += "/pronostics mondial - Pronostics WC 2026 ⚽"
         await update.message.reply_text(msg)
         return
     
@@ -3922,15 +3921,15 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if sport == "nhl":
         await pronostics_nhl(update, context)
-    elif sport == "mlb":
-        await pronostics_mlb(update, context)
     elif sport == "nba":
         await pronostics_nba(update, context)
     elif sport in ("mondial", "wc", "coupe", "soccer", "foot", "football"):
         await pronostics_mondial(update, context)
+    elif sport == "mlb":
+        await update.message.reply_text("⚾ MLB désactivé — picks non disponibles.")
     else:
         msg = f"❌ Sport '{sport}' non reconnu\n"
-        msg += "Sports disponibles: nba, nhl, mlb, mondial"
+        msg += "Sports disponibles: nba, nhl, mondial"
         await update.message.reply_text(msg)
 
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4194,12 +4193,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "COMMANDES MATCHS (Équipes en direct):\n"
     msg += "/nba - Équipes NBA 🏀\n"
     msg += "/nhl - Équipes NHL 🏒\n"
-    msg += "/mlb - Équipes MLB ⚾\n"
     msg += "/mondial - Matchs Coupe du Monde FIFA 2026 🏆\n\n"
     msg += "COMMANDES PRONOSTICS:\n"
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
-    msg += "/pronostics mlb - Prédictions MLB ⚾\n"
     msg += "/pronostics mondial - Prédictions WC 2026 ⚽\n\n"
     msg += "PARLAYS (Combinaisons multiiples):\n"
     msg += "/parlays - Auto-suggestions de parlays 🎯\n"
@@ -4582,7 +4579,6 @@ async def auto_daily_motivation(context):
     sports_config = [
         ("basketball/nba", "🏀 NBA"),
         ("hockey/nhl", "🏒 NHL"),
-        ("baseball/mlb", "⚾ MLB"),
     ]
     total_matches = 0
     today = datetime.datetime.now().strftime("%Y%m%d")
@@ -4744,7 +4740,6 @@ async def auto_send_pronostics(context):
     sports_config = [
         ("basketball/nba", "nba", "🏀"),
         ("hockey/nhl", "nhl", "🏒"),
-        ("baseball/mlb", "mlb", "⚾"),
     ]
 
     upcoming_matches = []  # [(sport_key, emoji, away, home)]
@@ -4864,8 +4859,6 @@ async def auto_send_pronostics(context):
             injuries_by_sport[sk] = get_injuries('basketball', 'nba')
         elif sk == "nhl":
             injuries_by_sport[sk] = get_injuries('hockey', 'nhl')
-        elif sk == "mlb":
-            injuries_by_sport[sk] = get_injuries('baseball', 'mlb')
     logger.info(f"✅ Blessures chargées pour: {', '.join([f'{sk}({len(injuries_by_sport[sk])})' for sk in injuries_by_sport])}")
 
     # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
@@ -5034,22 +5027,8 @@ async def auto_send_pronostics(context):
 
     all_picks.sort(key=lambda x: x['confidence'], reverse=True)
 
-    # ── FILTER MLB TO TOP 5 BEST PICKS ONLY ──────────────────────────────
-    # Separate MLB picks from others, then keep only best 5 MLB picks
-    nba_nhl_picks = [p for p in all_picks if "🏀" in p["label"] or "🏒" in p["label"]]
-    mlb_picks = [p for p in all_picks if "⚾" in p["label"]]
-    
-    if len(mlb_picks) > MLB_PICKS_MAX_PER_DAY:
-        # Sort MLB by confidence and keep only top 5
-        mlb_picks = sorted(mlb_picks, key=lambda x: x['confidence'], reverse=True)[:MLB_PICKS_MAX_PER_DAY]
-        logger.info(f"⚾ MLB: {len(mlb_picks)} best picks selected from daily pool (limit: {MLB_PICKS_MAX_PER_DAY}/day)")
-        all_picks = nba_nhl_picks + mlb_picks
-        all_picks.sort(key=lambda x: x['confidence'], reverse=True)
-    else:
-        mlb_count = len([p for p in all_picks if "⚾" in p["label"]])
-        if mlb_count > 0:
-            logger.info(f"⚾ MLB: {mlb_count} pick(s) available")
-    # ────────────────────────────────────────────────────────────────────
+    # ── Filtrer les picks MLB (désactivé) ──────────────────────────────
+    all_picks = [p for p in all_picks if "⚾" not in p["label"]]
 
     # ── Filtrage Brain : retire les picks sous le seuil appris ───────────
     if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
@@ -5063,11 +5042,6 @@ async def auto_send_pronostics(context):
         if filtered:
             all_picks = filtered
             logger.info(f"🧠 Brain filter: {len(all_picks)} pick(s) retenus")
-
-    # ── Vérification: MLB limité à {MLB_PICKS_MAX_PER_DAY} par jour ──────
-    mlb_picks = [p for p in all_picks if "⚾" in p["label"]]
-    if mlb_picks:
-        logger.info(f"⚾ MLB: {len(mlb_picks)} pick(s) dans ce batch (limité à {MLB_PICKS_MAX_PER_DAY}/jour globalement)")
 
     heure_qc = quebec_time.strftime('%H:%M')
 
@@ -6019,7 +5993,6 @@ def main():
     app.add_handler(CommandHandler("test", test_notification))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
-    app.add_handler(CommandHandler("mlb", mlb_matches))
     app.add_handler(CommandHandler("mondial", mondial_matches))
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
