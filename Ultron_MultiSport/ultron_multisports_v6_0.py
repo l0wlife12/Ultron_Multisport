@@ -224,6 +224,15 @@ try:
 except ImportError:
     TOTALS_AVAILABLE = False
 
+# Coupe du Monde FIFA 2026 — Dixon-Coles + Odds API h2h
+try:
+    from world_cup_analyzer import (
+        run_wc_analysis, format_wc_message, get_wc_games
+    )
+    WC_AVAILABLE = True
+except ImportError:
+    WC_AVAILABLE = False
+
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
 # Cela évite de charger un ancien token depuis config.env
@@ -274,15 +283,17 @@ _validate_config()
 MATCHES_CACHE_NBA = []
 MATCHES_CACHE_NHL = []
 MATCHES_CACHE_MLB = []
+MATCHES_CACHE_WC  = []
 MATCHES_CACHE_TIME = None
 
 # Cache Odds API — une requête toutes les 4h par sport, seulement avant les matchs
 _ODDS_API_CACHE = {}  # sport_key → {"data": [...], "fetched_at": datetime}
 _ODDS_API_CACHE_TTL = 14400  # 4 heures
 _ODDS_API_SPORT_KEYS = {
-    "nba": "basketball_nba",
-    "nhl": "icehockey_nhl",
-    "mlb": "baseball_mlb",
+    "nba":     "basketball_nba",
+    "nhl":     "icehockey_nhl",
+    "mlb":     "baseball_mlb",
+    "mondial": "soccer_fifa_world_cup",
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -709,6 +720,65 @@ NBA_PLAYER_PROPS = {
         }
     },
 }
+
+def get_live_matches_wc() -> list:
+    """Récupère les matchs Coupe du Monde FIFA 2026 depuis ESPN (soccer/fifa.world)."""
+    global MATCHES_CACHE_WC, MATCHES_CACHE_TIME
+
+    if MATCHES_CACHE_WC and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 300:  # cache 5 min pour le WC
+            return MATCHES_CACHE_WC
+
+    try:
+        if WC_AVAILABLE:
+            games = get_wc_games(days_ahead=3)
+            result = [(g["away_team"], g["home_team"]) for g in games]
+            MATCHES_CACHE_WC  = result
+            MATCHES_CACHE_TIME = datetime.datetime.now()
+            return result
+    except Exception as e:
+        logger.error(f"❌ get_live_matches_wc: {e}")
+
+    # Fallback ESPN direct
+    try:
+        today = datetime.datetime.now()
+        for offset in range(4):
+            date_str = (today + datetime.timedelta(days=offset)).strftime("%Y%m%d")
+            url = (
+                f"https://site.api.espn.com/apis/site/v2/sports"
+                f"/soccer/fifa.world/scoreboard?dates={date_str}"
+            )
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            daily = []
+            for event in data.get("events", []):
+                try:
+                    comp  = event.get("competitions", [{}])[0]
+                    teams = comp.get("competitors", [])
+                    desc  = event.get("status", {}).get("type", {}).get("description", "").lower()
+                    if any(w in desc for w in ["final", "completed", "cancelled", "postponed"]):
+                        continue
+                    if len(teams) >= 2:
+                        away = teams[0].get("team", {}).get("displayName", "")
+                        home = teams[1].get("team", {}).get("displayName", "")
+                        if away and home:
+                            daily.append((away, home))
+                except Exception:
+                    continue
+            if daily:
+                MATCHES_CACHE_WC  = daily
+                MATCHES_CACHE_TIME = datetime.datetime.now()
+                return daily
+    except Exception as e:
+        logger.error(f"❌ Erreur WC ESPN: {e}")
+
+    MATCHES_CACHE_WC  = []
+    MATCHES_CACHE_TIME = datetime.datetime.now()
+    return []
+
 
 def get_live_matches_nhl() -> list:
     """Récupère les matchs NHL en direct (ESPN API)"""
@@ -3775,6 +3845,38 @@ async def mlb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ mlb_matches: {e}")
         await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
+async def mondial_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les matchs FIFA Coupe du Monde 2026"""
+    try:
+        matches = get_live_matches_wc()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            msg = (
+                "❌ Aucun match Coupe du Monde aujourd'hui\n"
+                "_(Vérifiez les dates de la phase de groupes ou des matchs à élimination)_"
+            )
+            await update.message.reply_text(msg)
+            return
+
+        msg  = "🏆 COUPE DU MONDE FIFA 2026\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:25} vs  {home}\n"
+
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} match(s) trouvé(s)\n"
+        msg += "💡 Utilise /pronostics mondial pour les prédictions EV+"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ mondial_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur WC: {e}")
+
+
 async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les équipes NBA en direct"""
     try:
@@ -3824,9 +3926,11 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pronostics_mlb(update, context)
     elif sport == "nba":
         await pronostics_nba(update, context)
+    elif sport in ("mondial", "wc", "coupe", "soccer", "foot", "football"):
+        await pronostics_mondial(update, context)
     else:
         msg = f"❌ Sport '{sport}' non reconnu\n"
-        msg += "Sports disponibles: nba, nhl, mlb"
+        msg += "Sports disponibles: nba, nhl, mlb, mondial"
         await update.message.reply_text(msg)
 
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4040,17 +4144,63 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ pronostics_mlb: {e}")
         await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
+
+async def pronostics_mondial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pronostics Coupe du Monde FIFA 2026 — Dixon-Coles + Odds API"""
+    try:
+        await update.message.reply_text(
+            "⏳ Analyse des matchs Coupe du Monde en cours..."
+        )
+
+        if not WC_AVAILABLE:
+            await update.message.reply_text(
+                "❌ Module world_cup_analyzer non disponible."
+            )
+            return
+
+        picks = run_wc_analysis(days_ahead=2, send=False)
+
+        if not picks:
+            matches = get_live_matches_wc()
+            if not matches:
+                await update.message.reply_text(
+                    "❌ Aucun match Coupe du Monde trouvé aujourd'hui.\n"
+                    "_(Les matchs commencent le 11 juin 2026)_"
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ {len(matches)} match(s) trouvé(s) mais aucun pick EV positif."
+                )
+            return
+
+        msg = format_wc_message(picks)
+
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(
+                    msg[i:i+4000], parse_mode="Markdown"
+                )
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"❌ pronostics_mondial: {e}")
+        await update.message.reply_text(f"❌ Erreur Mondial: {e}")
+
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche l'aide"""
     msg = "🤖 ULTRON v6.0 - AIDE\n\n"
     msg += "COMMANDES MATCHS (Équipes en direct):\n"
     msg += "/nba - Équipes NBA 🏀\n"
     msg += "/nhl - Équipes NHL 🏒\n"
-    msg += "/mlb - Équipes MLB ⚾\n\n"
+    msg += "/mlb - Équipes MLB ⚾\n"
+    msg += "/mondial - Matchs Coupe du Monde FIFA 2026 🏆\n\n"
     msg += "COMMANDES PRONOSTICS:\n"
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
-    msg += "/pronostics mlb - Prédictions MLB ⚾\n\n"
+    msg += "/pronostics mlb - Prédictions MLB ⚾\n"
+    msg += "/pronostics mondial - Prédictions WC 2026 ⚽\n\n"
     msg += "PARLAYS (Combinaisons multiiples):\n"
     msg += "/parlays - Auto-suggestions de parlays 🎯\n"
     msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
@@ -5698,6 +5848,7 @@ def main():
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
     app.add_handler(CommandHandler("mlb", mlb_matches))
+    app.add_handler(CommandHandler("mondial", mondial_matches))
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
     app.add_handler(CommandHandler("player", player_props))
