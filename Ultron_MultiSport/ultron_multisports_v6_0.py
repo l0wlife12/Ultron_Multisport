@@ -5269,6 +5269,178 @@ async def auto_send_pronostics(context):
             logger.error(f"❌ Props joueurs envoi: {_pe}")
         await _asyncio.sleep(0.5)
 
+    # ── COUPE DU MONDE FIFA 2026 — envoi automatique ──────────────────────
+    # Vérifie les matchs WC dans la fenêtre 120 min et envoie les picks EV+
+    if WC_AVAILABLE:
+        try:
+            wc_upcoming = []
+            today_str   = datetime.datetime.utcnow().strftime("%Y%m%d")
+            tmrw_str    = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).strftime("%Y%m%d")
+
+            for d_str in (today_str, tmrw_str):
+                url  = (
+                    "https://site.api.espn.com/apis/site/v2/sports"
+                    f"/soccer/fifa.world/scoreboard?dates={d_str}"
+                )
+                resp = requests.get(url, timeout=8)
+                if resp.status_code != 200:
+                    continue
+                for event in resp.json().get("events", []):
+                    try:
+                        status = event.get("status", {}).get("type", {})
+                        desc   = status.get("description", "").lower()
+                        if any(w in desc for w in ["final", "completed", "cancelled", "postponed"]):
+                            continue
+
+                        date_str_ev = event.get("date", "")
+                        utc_ev = None
+                        for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ"):
+                            try:
+                                utc_ev = datetime.datetime.strptime(
+                                    date_str_ev, fmt
+                                ).replace(tzinfo=pytz.utc)
+                                break
+                            except ValueError:
+                                continue
+                        if utc_ev is None:
+                            continue
+
+                        minutes_until = (utc_ev - now_utc).total_seconds() / 60
+                        # Fenêtre : 120 min avant le coup d'envoi
+                        if not (-15 < minutes_until <= 120):
+                            continue
+
+                        comp  = event.get("competitions", [{}])[0]
+                        teams = comp.get("competitors", [])
+                        if len(teams) < 2:
+                            continue
+
+                        home_t = next(
+                            (t.get("team", {}).get("displayName", "")
+                             for t in teams if t.get("homeAway") == "home"),
+                            teams[0].get("team", {}).get("displayName", ""),
+                        )
+                        away_t = next(
+                            (t.get("team", {}).get("displayName", "")
+                             for t in teams if t.get("homeAway") == "away"),
+                            teams[1].get("team", {}).get("displayName", ""),
+                        )
+                        if not home_t or not away_t:
+                            continue
+
+                        notify_key = f"prono_{date_key}_wc_{away_t}_{home_t}"
+                        if notify_key in _notified_pronostics:
+                            elapsed_h = (
+                                datetime.datetime.now() - _notified_pronostics[notify_key]
+                            ).total_seconds() / 3600
+                            if elapsed_h < PRONO_RENOTIFY_HOURS:
+                                logger.debug(f"⏭️ WC déjà notifié: {away_t} vs {home_t}")
+                                continue
+
+                        _notified_pronostics[notify_key] = datetime.datetime.now()
+                        wc_upcoming.append((away_t, home_t, utc_ev, minutes_until))
+                        logger.info(
+                            f"⚽ WC match trouvé: {away_t} vs {home_t} "
+                            f"dans {minutes_until:.0f} min"
+                        )
+                    except Exception as _wc_ev_err:
+                        logger.debug(f"⚠️ WC event parse: {_wc_ev_err}")
+                        continue
+
+            if wc_upcoming:
+                logger.info(f"⚽ WC: {len(wc_upcoming)} match(s) → analyse en cours...")
+                wc_picks = run_wc_analysis(days_ahead=1, send=False)
+
+                if wc_picks:
+                    msg_wc = format_wc_message(wc_picks)
+
+                    # Canal FREE — résumé compact 1 pick
+                    wc_best = wc_picks[0]
+                    side_tag = {
+                        "home": "🏠", "draw": "🤝", "away": "✈️"
+                    }.get(wc_best.get("pick_side", ""), "⚽")
+                    status_tag = (
+                        "🟢" if wc_best["status"] == "✅ BUY" else "🟡"
+                    )
+                    qc_time_wc = wc_best["commence"]
+                    try:
+                        utc_wc_dt = datetime.datetime.fromisoformat(
+                            qc_time_wc.replace("Z", "+00:00")
+                        )
+                        heure_qc_wc = utc_wc_dt.astimezone(QUEBEC_TZ).strftime("%H:%M")
+                    except Exception:
+                        heure_qc_wc = "?"
+
+                    msg_free_wc  = f"🏆 COUPE DU MONDE FIFA 2026\n"
+                    msg_free_wc += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg_free_wc += (
+                        f"{status_tag} {wc_best['pick']}\n"
+                        f"🕐 {heure_qc_wc} (Québec)\n"
+                        f"⚽ {wc_best['away_team']} vs {wc_best['home_team']}\n"
+                        f"💵 Cote: {wc_best['bet_odds']:.2f} "
+                        f"| EV: {wc_best['ev_pct']}\n"
+                    )
+                    buy_wc = [p for p in wc_picks[1:] if p["status"] == "✅ BUY"]
+                    if buy_wc:
+                        msg_free_wc += "\n"
+                        for p in buy_wc[:2]:
+                            msg_free_wc += (
+                                f"🟢 {p['pick']} | "
+                                f"{p['away_team']} vs {p['home_team']}\n"
+                            )
+                    msg_free_wc += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg_free_wc += "💎 Analyse complète en VIP ↑"
+
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID, text=msg_free_wc
+                        )
+                        logger.info(f"✅ WC pick FREE envoyé ({len(wc_picks)} picks)")
+                    except Exception as _wc_free_err:
+                        logger.error(f"❌ WC FREE: {_wc_free_err}")
+
+                    # Canal VIP — message complet avec toutes les analyses
+                    if TELEGRAM_CHAT_ID_VIP:
+                        if len(msg_wc) > 4000:
+                            for _i in range(0, len(msg_wc), 4000):
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=TELEGRAM_CHAT_ID_VIP,
+                                        text=msg_wc[_i:_i+4000],
+                                        parse_mode="Markdown",
+                                    )
+                                except Exception:
+                                    # Fallback sans markdown si parsing échoue
+                                    try:
+                                        await context.bot.send_message(
+                                            chat_id=TELEGRAM_CHAT_ID_VIP,
+                                            text=msg_wc[_i:_i+4000],
+                                        )
+                                    except Exception as _wc_vip_err:
+                                        logger.error(f"❌ WC VIP chunk: {_wc_vip_err}")
+                        else:
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=TELEGRAM_CHAT_ID_VIP,
+                                    text=msg_wc,
+                                    parse_mode="Markdown",
+                                )
+                            except Exception:
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_wc
+                                    )
+                                except Exception as _wc_vip_err:
+                                    logger.error(f"❌ WC VIP: {_wc_vip_err}")
+                        logger.info(
+                            f"✅ WC picks VIP envoyés: {len(wc_picks)} "
+                            f"({sum(1 for p in wc_picks if p['status']=='✅ BUY')} BUY)"
+                        )
+                else:
+                    logger.info("⏭️ WC: matchs dans la fenêtre mais aucun pick EV+")
+        except Exception as _wc_auto_err:
+            logger.error(f"❌ auto WC: {_wc_auto_err}", exc_info=True)
+
 
 async def auto_check_results(context):
     """
