@@ -42,8 +42,8 @@ TELEGRAM_TOKEN = (
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
 TELEGRAM_VIP   = os.environ.get("TELEGRAM_CHAT_ID_VIP", "")
 
-MIN_EV         = 0.01   # EV minimum 1%
-MIN_CONFIDENCE = 52     # Confiance minimale /100 (soccer plus difficile à prédire)
+MIN_EV         = -0.20  # Accepte tous les picks WC (même EV légèrement négatif)
+MIN_CONFIDENCE = 40     # Confiance minimale /100
 
 _SESSION = requests.Session()
 _SESSION.headers.update({"User-Agent": "UltronBot/6.0"})
@@ -627,13 +627,13 @@ def _find_best_pick(
     home_ml: float, draw_odds: float, away_ml: float,
     home_team: str, away_team: str,
 ) -> Optional[dict]:
-    """Trouve le pick avec le meilleur EV positif parmi home/draw/away."""
+    """Retourne toujours le pick avec le meilleur EV parmi home/draw/away."""
     candidates = [
         {"pick": f"{home_team} ML",  "prob": p_home, "odds": home_ml,   "side": "home"},
         {"pick": "Nul / Draw",       "prob": p_draw, "odds": draw_odds,  "side": "draw"},
         {"pick": f"{away_team} ML",  "prob": p_away, "odds": away_ml,    "side": "away"},
     ]
-    best_ev   = MIN_EV
+    best_ev   = float('-inf')   # toujours garder le meilleur candidat
     best_pick = None
     for c in candidates:
         if c["odds"] <= 1.0:

@@ -4883,7 +4883,8 @@ async def auto_send_pronostics(context):
             elif sport_key == "nhl":
                 pred = generate_prediction_nhl(away, home)
             else:
-                pred = generate_prediction_mlb(away, home)
+                logger.debug(f"⏭️ Sport non géré dans auto_send: {sport_key}")
+                continue
             
             # ── Enrichir le scoring runline pour MLB si données ESPN disponibles ──
             if sport_key == "mlb" and pred and MLB_RUNLINE_AVAILABLE:
@@ -5183,12 +5184,6 @@ async def auto_send_pronostics(context):
         msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
         msg_vip += "     Bonne chance! 🍀"
         
-        # ── Update MLB daily counter for picks being sent ──
-        mlb_sent_count = len([p for p in all_picks if "⚾" in p["label"]])
-        _mlb_picks_sent_today["count"] = mlb_sent_count
-        if mlb_sent_count > 0:
-            logger.info(f"⚾ MLB counter updated: {_mlb_picks_sent_today['count']}/{MLB_PICKS_MAX_PER_DAY} picks being sent")
-        
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
             logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U) + Parlays")
@@ -5311,8 +5306,7 @@ async def auto_send_pronostics(context):
                                 logger.debug(f"⏭️ WC déjà notifié: {away_t} vs {home_t}")
                                 continue
 
-                        _notified_pronostics[notify_key] = datetime.datetime.now()
-                        wc_upcoming.append((away_t, home_t, utc_ev, minutes_until))
+                        wc_upcoming.append((away_t, home_t, utc_ev, minutes_until, notify_key))
                         logger.info(
                             f"⚽ WC match trouvé: {away_t} vs {home_t} "
                             f"dans {minutes_until:.0f} min"
@@ -5327,6 +5321,10 @@ async def auto_send_pronostics(context):
 
                 if wc_picks:
                     msg_wc = format_wc_message(wc_picks)
+
+                    # Marquer MAINTENANT les matchs comme notifiés (picks trouvés)
+                    for *_, nk in wc_upcoming:
+                        _notified_pronostics[nk] = datetime.datetime.now()
 
                     # Canal FREE — résumé compact 1 pick
                     wc_best = wc_picks[0]
