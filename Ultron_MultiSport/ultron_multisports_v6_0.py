@@ -4710,6 +4710,22 @@ def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> 
         return ""
 
 
+def confidence_tier_emoji(confidence: float) -> str:
+    """
+    Emoji de force du pick basé sur la confiance (0-100).
+    🔒 Lock (haute confiance, 75+) | ⚡ Medium (60-74) | 🎲 Risqué (<60)
+    """
+    try:
+        c = float(confidence)
+    except (TypeError, ValueError):
+        return "🎲"
+    if c >= 75:
+        return "🔒"
+    if c >= 60:
+        return "⚡"
+    return "🎲"
+
+
 async def auto_send_pronostics(context):
     """
     Toutes les 30 minutes: vérifie s'il y a des matchs qui commencent
@@ -5060,18 +5076,18 @@ async def auto_send_pronostics(context):
     else:
         pick_line = pick_display
     
-    # Ajouter emoji de confiance (🟢 BUY / 🔴 PASS)
-    status_emoji = "🟢" if "BUY" in free['ml_status'] else "🔴"
-    msg_free  = f"{status_emoji} {pick_line}\n"
+    # Ajouter emoji de force (🔒 Lock / ⚡ Medium / 🎲 Risqué) basé sur la confiance
+    status_emoji = confidence_tier_emoji(free.get('ml_confidence', 0))
+    msg_free  = f"{status_emoji} {pick_line} — Confiance: {free.get('ml_confidence', 0)}/100\n"
     # Ajouter les autres picks si multi-match
     for p in all_picks[1:]:
-        status_e = "🟢" if "BUY" in p['ml_status'] else "🔴"
+        status_e = confidence_tier_emoji(p.get('ml_confidence', 0))
         pick_display2 = p['ml_pick']
         if " ML" in pick_display2:
             team_name = pick_display2.replace(" ML", "").split()[-1]
-            msg_free += f"{status_e} {team_name} ML\n"
+            msg_free += f"{status_e} {team_name} ML — Confiance: {p.get('ml_confidence', 0)}/100\n"
         else:
-            msg_free += f"{status_e} {pick_display2}\n"
+            msg_free += f"{status_e} {pick_display2} — Confiance: {p.get('ml_confidence', 0)}/100\n"
     
     msg_free += "\n"
     msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -5099,12 +5115,12 @@ async def auto_send_pronostics(context):
         for i, p in enumerate(all_picks, 1):
             emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
             src = p.get('source', '📊')
-            # Statut ML: Support 3 états (BUY/MONITORING/PASS)
-            status_emoji_ml = "🟢" if "BUY" in p['ml_status'] else ("🟡" if "MONITORING" in p['ml_status'] else "🔴")
-            # Statut SPREAD: Support 3 états (BUY/MONITORING/PASS)
-            status_emoji_spread = "🟢" if "BUY" in p.get('spread_status', '') else ("🟡" if "MONITORING" in p.get('spread_status', '') else "🔴")
-            # Statut O/U: Support 3 états (BUY/MONITORING/PASS)
-            status_emoji_ou = "🟢" if "BUY" in p.get('ou_status', '') else ("🟡" if "MONITORING" in p.get('ou_status', '') else "🔴")
+            # Statut ML: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_ml = confidence_tier_emoji(p.get('ml_confidence', 0))
+            # Statut SPREAD: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_spread = confidence_tier_emoji(p.get('spread_confidence', 0))
+            # Statut O/U: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_ou = confidence_tier_emoji(p.get('ou_confidence', 0))
             book = p.get('bookmaker', 'N/A')
             
             # Déterminer le label O/U selon le sport
@@ -5118,7 +5134,7 @@ async def auto_send_pronostics(context):
             
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
             msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
-            msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']}\n"
+            msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']} — Confiance: {p.get('ml_confidence', 0)}/100\n"
             if p.get('spread_pick'):
                 # Afficher enriched runline pour MLB si disponible
                 if p.get('sport') == 'mlb' and p.get('confidence_enriched'):
@@ -5126,7 +5142,7 @@ async def auto_send_pronostics(context):
                     ats = p.get('ats_record', 'N/A')
                     pitcher_era = p.get('pitcher_era', 0)
                     pitcher_name = p.get('pitcher_name', 'TBD')
-                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
                     msg_vip += f"{emoji_enriched} RUNLINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | ERA {pitcher_era:.2f})\n"
                 # Afficher enriched spread pour NBA si disponible
                 elif p.get('sport') == 'nba' and p.get('confidence_enriched'):
@@ -5134,7 +5150,7 @@ async def auto_send_pronostics(context):
                     ats = p.get('ats_record', 'N/A')
                     net_rating = p.get('net_rating', 0)
                     is_b2b = p.get('is_b2b', False)
-                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
                     b2b_tag = " ⚠️ B2B" if is_b2b else ""
                     msg_vip += f"{emoji_enriched} SPREAD: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | Net {net_rating:+.1f}){b2b_tag}\n"
                 # Afficher enriched puck line pour NHL si disponible
@@ -5143,12 +5159,12 @@ async def auto_send_pronostics(context):
                     ats = p.get('ats_record', 'N/A')
                     goalie_name = p.get('goalie', {}).get('name', 'TBD') if isinstance(p.get('goalie'), dict) else 'TBD'
                     goalie_sv = p.get('goalie', {}).get('save_pct', 0.900) if isinstance(p.get('goalie'), dict) else 0.900
-                    emoji_enriched = "🟢" if enriched_conf >= 68 else ("🟡" if enriched_conf >= 55 else "🔴")
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
                     msg_vip += f"{emoji_enriched} PUCK LINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | 🥅 {goalie_name} {goalie_sv:.3f})\n"
                 else:
-                    msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']}\n"
+                    msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']} — Confiance: {p.get('spread_confidence', 0)}/100\n"
             if p.get('ou_pick'):
-                msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']}\n"
+                msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']} — Confiance: {p.get('ou_confidence', 0)}/100\n"
         
         msg_vip += "\n═══════════════════════════════════════════\n"
         msg_vip += "🎯  PARLAYS BONUS\n"
