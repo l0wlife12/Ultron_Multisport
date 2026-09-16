@@ -224,14 +224,9 @@ try:
 except ImportError:
     TOTALS_AVAILABLE = False
 
-# Coupe du Monde FIFA 2026 — Dixon-Coles + Odds API h2h
-try:
-    from world_cup_analyzer import (
-        run_wc_analysis, format_wc_message, get_wc_games
-    )
-    WC_AVAILABLE = True
-except ImportError:
-    WC_AVAILABLE = False
+# Coupe du Monde FIFA 2026 — RETIRÉ (désactivé volontairement, voir demande utilisateur)
+# Le module world_cup_analyzer.py reste dans le repo au cas où, mais n'est plus utilisé.
+WC_AVAILABLE = False
 
 # ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
 # config.env est ignoré par .gitignore donc n'existe pas sur Railway
@@ -4153,7 +4148,7 @@ async def pronostics_mondial(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
         if not WC_AVAILABLE:
             await update.message.reply_text(
-                "❌ Module world_cup_analyzer non disponible."
+                "❌ La Coupe du Monde n'est plus couverte par Ultron pour le moment."
             )
             return
 
@@ -5991,7 +5986,7 @@ def main():
     app.add_handler(CommandHandler("test", test_notification))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
-    app.add_handler(CommandHandler("mondial", mondial_matches))
+    # Coupe du Monde retirée — commande /mondial désactivée
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
     app.add_handler(CommandHandler("player", player_props))
