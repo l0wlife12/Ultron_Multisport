@@ -30,10 +30,97 @@ from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
-# ── Chemins ──────────────────────────────────────────────────────────────────
+# ── Chemins (fallback JSON local si pas de DB) ────────────────────────────────
 _BASE = "/data" if os.path.isdir("/data") else "."
 THRESHOLDS_FILE = os.path.join(_BASE, "learned_thresholds.json")
 ANALYSIS_FILE   = os.path.join(_BASE, "brain_analysis.json")
+
+# ── PostgreSQL (Railway DATABASE_URL) — même pattern que pick_memory.py ───────
+_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+
+
+def _db_connect():
+    """Ouvre une connexion psycopg2 si DATABASE_URL est défini."""
+    if not _DATABASE_URL:
+        return None
+    try:
+        import psycopg2
+        # Railway injecte 'postgres://' mais psycopg2 requiert 'postgresql://'
+        url = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url)
+    except Exception as e:
+        logger.error(f"❌ brain DB connexion: {e}")
+        return None
+
+
+def _db_init():
+    """Crée la table brain_store si elle n'existe pas encore."""
+    if not _DATABASE_URL:
+        logger.info("ℹ️  brain: DATABASE_URL absent — stockage JSON local uniquement")
+        return
+    conn = _db_connect()
+    if not conn:
+        logger.warning("⚠️  brain: DATABASE_URL présent mais connexion échouée — fallback JSON")
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS brain_store (
+                        key  TEXT PRIMARY KEY,
+                        data JSONB NOT NULL
+                    )
+                """)
+        logger.info("✅ brain: table brain_store prête (PostgreSQL)")
+    except Exception as e:
+        logger.error(f"❌ brain DB init: {e}")
+    finally:
+        conn.close()
+
+
+def _db_load(key: str):
+    """Charge un blob JSON depuis brain_store, ou None si absent/échec/pas de DB."""
+    conn = _db_connect()
+    if not conn:
+        return None
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM brain_store WHERE key = %s", (key,))
+                row = cur.fetchone()
+                if row:
+                    return row[0]  # psycopg2 désérialise JSONB automatiquement
+    except Exception as e:
+        logger.error(f"❌ brain DB load ({key}): {e}")
+    finally:
+        conn.close()
+    return None
+
+
+def _db_save(key: str, data: dict) -> bool:
+    """Sauvegarde un blob JSON dans brain_store. Retourne True si succès DB."""
+    conn = _db_connect()
+    if not conn:
+        return False
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO brain_store (key, data) VALUES (%s, %s)
+                    ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data
+                    """,
+                    (key, json.dumps(data, ensure_ascii=False)),
+                )
+        return True
+    except Exception as e:
+        logger.error(f"❌ brain DB save ({key}): {e}")
+        return False
+    finally:
+        conn.close()
+
+
+_db_init()
 
 # ── Seuils par défaut (avant apprentissage) ───────────────────────────────────
 DEFAULT_THRESHOLDS = {
@@ -124,22 +211,36 @@ def _bucket_odds(odds_str: str) -> str:
         return "Inconnu"
 
 
+def _merge_defaults(data: dict) -> dict:
+    """Fusion avec les défauts pour les nouvelles clés."""
+    for k, v in DEFAULT_THRESHOLDS.items():
+        if k not in data:
+            data[k] = v
+    return data
+
+
 def load_thresholds() -> dict:
+    # Essai PostgreSQL en priorité
+    data = _db_load("learned_thresholds")
+    if data is not None:
+        return _merge_defaults(data)
+
+    # Fallback fichier JSON local
     if os.path.exists(THRESHOLDS_FILE):
         try:
             with open(THRESHOLDS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                # Fusion avec les défauts pour les nouvelles clés
-                for k, v in DEFAULT_THRESHOLDS.items():
-                    if k not in data:
-                        data[k] = v
-                return data
+                return _merge_defaults(json.load(f))
         except (json.JSONDecodeError, OSError):
             pass
     return dict(DEFAULT_THRESHOLDS)
 
 
 def _save_thresholds(t: dict):
+    # Sauvegarder dans PostgreSQL si disponible
+    if _db_save("learned_thresholds", t):
+        return  # succès DB, pas besoin d'écrire le fichier
+
+    # Fallback fichier JSON local
     try:
         with open(THRESHOLDS_FILE, "w", encoding="utf-8") as f:
             json.dump(t, f, indent=2, ensure_ascii=False)
@@ -282,12 +383,13 @@ def run_analysis(picks_history: dict = None) -> dict:
             "win_rate":  round(best_wr, 4),
         }
 
-    # ── Sauvegarde du rapport brut ────────────────────────────────────────
-    try:
-        with open(ANALYSIS_FILE, "w", encoding="utf-8") as f:
-            json.dump(analysis, f, indent=2, ensure_ascii=False)
-    except OSError:
-        pass
+    # ── Sauvegarde du rapport brut (PostgreSQL en priorité, JSON en secours) ─
+    if not _db_save("brain_analysis", analysis):
+        try:
+            with open(ANALYSIS_FILE, "w", encoding="utf-8") as f:
+                json.dump(analysis, f, indent=2, ensure_ascii=False)
+        except OSError:
+            pass
 
     # ── Mise à jour des seuils appris ─────────────────────────────────────
     _update_thresholds(analysis, n_total)
@@ -481,13 +583,14 @@ def format_brain_report(analysis: dict = None) -> str:
     Si analysis est None, recharge depuis brain_analysis.json ou relance run_analysis().
     """
     if analysis is None:
-        if os.path.exists(ANALYSIS_FILE):
+        analysis = _db_load("brain_analysis")  # PostgreSQL en priorité
+        if analysis is None and os.path.exists(ANALYSIS_FILE):
             try:
                 with open(ANALYSIS_FILE, "r", encoding="utf-8") as f:
                     analysis = json.load(f)
             except (json.JSONDecodeError, OSError):
-                analysis = run_analysis()
-        else:
+                analysis = None
+        if analysis is None:
             analysis = run_analysis()
 
     if not analysis:
