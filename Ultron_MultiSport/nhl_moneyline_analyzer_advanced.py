@@ -575,7 +575,9 @@ def score_moneyline(
 # ══════════════════════════════════════════
 def build_telegram_message(r: dict, game: dict) -> str:
     """Build detailed Telegram message for MoneyLine pick"""
-    emoji = "🔥" if r["confidence"] >= 80 else "✅"
+    # 🔒 Lock (haute confiance) | ⚡ Medium | 🎲 Risqué (voir seuils convenus)
+    c = r["confidence"]
+    emoji = "🔒" if c >= 75 else ("⚡" if c >= 60 else "🎲")
     side_str = "HOME" if r["side"] == "home" else "AWAY"
     b2b_str = " ⚠️ B2B" if r["is_b2b"] else ""
     road_str = f" 🛫 Road #{r['road_trip']}" if r["road_trip"] >= 2 else ""
