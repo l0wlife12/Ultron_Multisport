@@ -649,7 +649,9 @@ def score_puck_line(
 #  11.  MESSAGE TELEGRAM
 # ══════════════════════════════════════════
 def build_telegram_message(r: dict, game: dict) -> str:
-    emoji      = "🔥" if r["confidence"] >= 80 else "✅"
+    # 🔒 Lock (haute confiance) | ⚡ Medium | 🎲 Risqué (voir seuils convenus)
+    c = r["confidence"]
+    emoji      = "🔒" if c >= 75 else ("⚡" if c >= 60 else "🎲")
     spread_str = f"{r['spread']:+.1f}"
     side_str   = "DOMICILE" if r["side"] == "home" else "EXTÉRIEUR"
     b2b_str    = " ⚠️ B2B" if r["is_b2b"] else ""
