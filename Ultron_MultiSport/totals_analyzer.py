@@ -98,6 +98,53 @@ SPORT_CONFIG = {
 BK_PRIORITY = ["draftkings", "fanduel", "betmgm", "bet365", "bovada", "pointsbet"]
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PARK FACTORS MLB — multiplicateur de scoring selon le stade du match
+# ─────────────────────────────────────────────────────────────────────────────
+# 1.00 = neutre (score moyen ligue). >1.00 = favorise l'attaque (plus de runs).
+# <1.00 = favorise le pitching (moins de runs). Basé sur des tendances connues
+# et publiées (altitude, dimensions du terrain, conditions climatiques types).
+# ⚠️ À RECALIBRER chaque saison avec les vrais park factors officiels
+# (ex: source ESPN/FanGraphs park factors) — ces valeurs sont des estimations
+# de départ, pas des chiffres officiels à jour.
+MLB_PARK_FACTORS = {
+    "COL": 1.15,  # Coors Field — altitude, l'effet le plus documenté du MLB
+    "BOS": 1.06,  # Fenway Park — Green Monster, champ gauche court
+    "CIN": 1.05,  # Great American Ball Park — dimensions favorables aux CC
+    "TEX": 1.04,  # Globe Life Field
+    "BAL": 1.03,  # Camden Yards
+    "PHI": 1.02,  # Citizens Bank Park
+    "MIN": 1.01,
+    "HOU": 1.01,
+    "CHC": 1.00,  # Wrigley Field — dépend fortement du vent (variable)
+    "ATL": 1.00,
+    "ARI": 1.00,
+    "MIL": 0.99,
+    "TOR": 0.99,
+    "WSH": 0.99,
+    "NYY": 0.98,
+    "LAA": 0.98,
+    "STL": 0.98,
+    "CHW": 0.97,
+    "KC":  0.97,
+    "NYM": 0.97,
+    "CLE": 0.96,
+    "TB":  0.96,
+    "DET": 0.96,
+    "LAD": 0.95,
+    "PIT": 0.95,
+    "OAK": 0.94,
+    "SD":  0.94,
+    "MIA": 0.93,  # loanDepot Park — pitcher friendly
+    "SEA": 0.93,  # T-Mobile Park — pitcher friendly, air marin
+    "SF":  0.91,  # Oracle Park — le plus pitcher-friendly du MLB
+}
+
+
+def get_mlb_park_factor(home_abbr: str) -> float:
+    """Retourne le park factor du stade domicile (1.00 si équipe inconnue)."""
+    return MLB_PARK_FACTORS.get(home_abbr.upper(), 1.00)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HELPERS HTTP
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -558,6 +605,7 @@ def predict_total(
     away_injuries:  int,
     home_is_b2b:    bool,
     away_is_b2b:    bool,
+    park_factor:    float = 1.00,
 ) -> dict:
     """
     Prédit le total attendu pour un match.
@@ -565,7 +613,7 @@ def predict_total(
     Formule en 3 couches :
       1. Base saison   (40%) : avg_off_home + avg_def_away + avg_off_away + avg_def_home
       2. Forme récente (40%) : total_l10 des deux équipes
-      3. Ajustements   (20%) : B2B, blessures, avantage domicile
+      3. Ajustements   (20%) : B2B, blessures, avantage domicile, park factor (MLB)
 
     Retourne: predicted_total, confidence (0-100), details
     """
@@ -641,6 +689,16 @@ def predict_total(
         adjustments.append(f"-{inj_pen:.1f} blessure away (1)")
 
     predicted = round(base + adj_total, 1)
+
+    # Park factor MLB — appliqué au total complet, affecte les deux équipes
+    # (Coors gonfle les runs pour QUI QUE CE SOIT qui frappe là-bas)
+    if sport == "MLB" and park_factor != 1.00:
+        pre_park = predicted
+        predicted = round(predicted * park_factor, 1)
+        adjustments.append(
+            f"×{park_factor:.2f} park factor ({pre_park}→{predicted})"
+        )
+
     predicted = max(cfg["avg_total"] * 0.6, predicted)  # plancher réaliste
 
     # ── Confiance ────────────────────────────────────────────────────────────
@@ -679,6 +737,7 @@ def predict_total(
         "adjustments":  adjustments,
         "confidence":   confidence,
         "data_quality": f"{min(home_games, away_games)}/10 matchs L10",
+        "park_factor":  park_factor,
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -766,6 +825,9 @@ def analyze_game_total(
     home_inj   = _count_key_injuries(home_team, injuries, sport)
     away_inj   = _count_key_injuries(away_team, injuries, sport)
 
+    # Park factor — uniquement pertinent pour MLB (stade domicile fixe)
+    park_factor = get_mlb_park_factor(home_abbr) if sport == "MLB" else 1.00
+
     # ── 3. Prédiction ─────────────────────────────────────────────────────────
     prediction = predict_total(
         sport         = sport,
@@ -777,6 +839,7 @@ def analyze_game_total(
         away_injuries = away_inj,
         home_is_b2b   = home_b2b,
         away_is_b2b   = away_b2b,
+        park_factor   = park_factor,
     )
 
     predicted  = prediction["predicted"]
@@ -876,6 +939,7 @@ def analyze_game_total(
         "away_off":       away_stats.get("off_avg", 0),
         "home_def":       home_stats.get("def_avg", 0),
         "away_def":       away_stats.get("def_avg", 0),
+        "park_factor":    park_factor,
     }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -903,8 +967,14 @@ def _format_single_pick(pick: dict) -> str:
 
     adj_str = " | ".join(pick["adjustments"][:3]) if pick["adjustments"] else "—"
 
+    park_str = ""
+    if pick["sport"] == "MLB" and pick.get("park_factor", 1.0) != 1.0:
+        pf = pick["park_factor"]
+        tag = "🏟️ terrain offensif" if pf > 1.0 else "🏟️ terrain pitching"
+        park_str = f" {tag} (×{pf:.2f})"
+
     lines = [
-        f"{conf_emoji} *{pick['away_team']} @ {pick['home_team']}*{b2b_str}{inj_str}",
+        f"{conf_emoji} *{pick['away_team']} @ {pick['home_team']}*{b2b_str}{inj_str}{park_str}",
         (
             f"   {side_emoji} *{pick['side']} {pick['book_line']}* "
             f"{cfg['ou_label']} @ `{pick['bet_odds']:.2f}`"
