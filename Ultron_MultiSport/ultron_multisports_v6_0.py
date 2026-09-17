@@ -3908,7 +3908,7 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "Exemple:\n"
         msg += "/pronostics nba - Pronostics NBA\n"
         msg += "/pronostics nhl - Pronostics NHL 🏒\n"
-        msg += "/pronostics mondial - Pronostics WC 2026 ⚽"
+        msg += "/pronostics mlb - Pronostics MLB ⚾"
         await update.message.reply_text(msg)
         return
     
@@ -3918,13 +3918,11 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pronostics_nhl(update, context)
     elif sport == "nba":
         await pronostics_nba(update, context)
-    elif sport in ("mondial", "wc", "coupe", "soccer", "foot", "football"):
-        await pronostics_mondial(update, context)
     elif sport == "mlb":
-        await update.message.reply_text("⚾ MLB désactivé — picks non disponibles.")
+        await pronostics_mlb(update, context)
     else:
         msg = f"❌ Sport '{sport}' non reconnu\n"
-        msg += "Sports disponibles: nba, nhl, mondial"
+        msg += "Sports disponibles: nba, nhl, mlb"
         await update.message.reply_text(msg)
 
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4188,11 +4186,11 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "COMMANDES MATCHS (Équipes en direct):\n"
     msg += "/nba - Équipes NBA 🏀\n"
     msg += "/nhl - Équipes NHL 🏒\n"
-    msg += "/mondial - Matchs Coupe du Monde FIFA 2026 🏆\n\n"
+    msg += "/mlb - Équipes MLB ⚾\n\n"
     msg += "COMMANDES PRONOSTICS:\n"
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
-    msg += "/pronostics mondial - Prédictions WC 2026 ⚽\n\n"
+    msg += "/pronostics mlb - Prédictions MLB ⚾\n\n"
     msg += "PARLAYS (Combinaisons multiiples):\n"
     msg += "/parlays - Auto-suggestions de parlays 🎯\n"
     msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
@@ -6007,6 +6005,7 @@ def main():
     app.add_handler(CommandHandler("test", test_notification))
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
+    app.add_handler(CommandHandler("mlb", mlb_matches))
     # Coupe du Monde retirée — commande /mondial désactivée
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
