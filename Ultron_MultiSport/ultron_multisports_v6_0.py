@@ -4574,9 +4574,10 @@ async def auto_daily_motivation(context):
     sports_config = [
         ("basketball/nba", "🏀 NBA"),
         ("hockey/nhl", "🏒 NHL"),
+        ("baseball/mlb", "⚾ MLB"),
     ]
     total_matches = 0
-    today = datetime.datetime.now().strftime("%Y%m%d")
+    today = quebec_time.strftime("%Y%m%d")
 
     for sport_path, sport_label in sports_config:
         try:
@@ -4751,6 +4752,7 @@ async def auto_send_pronostics(context):
     sports_config = [
         ("basketball/nba", "nba", "🏀"),
         ("hockey/nhl", "nhl", "🏒"),
+        ("baseball/mlb", "mlb", "⚾"),
     ]
 
     upcoming_matches = []  # [(sport_key, emoji, away, home)]
@@ -4870,6 +4872,8 @@ async def auto_send_pronostics(context):
             injuries_by_sport[sk] = get_injuries('basketball', 'nba')
         elif sk == "nhl":
             injuries_by_sport[sk] = get_injuries('hockey', 'nhl')
+        elif sk == "mlb":
+            injuries_by_sport[sk] = get_injuries('baseball', 'mlb')
     logger.info(f"✅ Blessures chargées pour: {', '.join([f'{sk}({len(injuries_by_sport[sk])})' for sk in injuries_by_sport])}")
 
     # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
@@ -4893,6 +4897,8 @@ async def auto_send_pronostics(context):
                 pred = generate_prediction_nba(away, home)
             elif sport_key == "nhl":
                 pred = generate_prediction_nhl(away, home)
+            elif sport_key == "mlb":
+                pred = generate_prediction_mlb(away, home)
             else:
                 logger.debug(f"⏭️ Sport non géré dans auto_send: {sport_key}")
                 continue
@@ -5039,8 +5045,7 @@ async def auto_send_pronostics(context):
 
     all_picks.sort(key=lambda x: x['confidence'], reverse=True)
 
-    # ── Filtrer les picks MLB (désactivé) ──────────────────────────────
-    all_picks = [p for p in all_picks if "⚾" not in p["label"]]
+    # ── MLB réactivé (était désactivé par erreur — voir historique) ──────
 
     # ── Filtrage Brain : retire les picks sous le seuil appris ───────────
     if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
