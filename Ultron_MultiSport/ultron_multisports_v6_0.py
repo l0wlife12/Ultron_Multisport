@@ -786,7 +786,7 @@ def get_live_matches_nhl() -> list:
     try:
         today = datetime.datetime.now()
         
-        for day_offset in range(7):
+        for day_offset in range(-1, 7):
             search_date = today + datetime.timedelta(days=day_offset)
             date_str = search_date.strftime("%Y%m%d")
             
@@ -840,8 +840,10 @@ def get_live_matches_mlb() -> list:
     try:
         today = datetime.datetime.now()
         
-        # Cherche seulement aujourd'hui et demain (max 2 jours)
-        for day_offset in range(2):
+        # Cherche hier, aujourd'hui et demain (couvre le décalage UTC/ET
+        # pour les matchs de soirée qui peuvent être indexés différemment
+        # selon la convention de date utilisée par ESPN)
+        for day_offset in (-1, 0, 1):
             search_date = today + datetime.timedelta(days=day_offset)
             date_str = search_date.strftime("%Y%m%d")
             
@@ -870,20 +872,15 @@ def get_live_matches_mlb() -> list:
                     except Exception:
                         continue
                 
-                # Si c'est AUJOURD'HUI et il y a des matchs, les retourner immédiatement
-                if daily_matches and day_offset == 0:
-                    MATCHES_CACHE_MLB = daily_matches
-                    MATCHES_CACHE_TIME = datetime.datetime.now()
-                    return daily_matches
-                
-                # Si c'est DEMAIN et aucun match aujourd'hui, retourner ceux de demain
-                if daily_matches and day_offset == 1:
+                # Dès qu'on trouve des matchs non terminés (peu importe le jour
+                # vérifié), on les retourne immédiatement
+                if daily_matches:
                     MATCHES_CACHE_MLB = daily_matches
                     MATCHES_CACHE_TIME = datetime.datetime.now()
                     return daily_matches
         
-        # Aucun match trouvé aujourd'hui ni demain
-        logger.info("ℹ️ Aucun match MLB aujourd'hui ou demain")
+        # Aucun match trouvé sur la fenêtre de 3 jours
+        logger.info("ℹ️ Aucun match MLB trouvé (hier/aujourd'hui/demain)")
         MATCHES_CACHE_MLB = []
         MATCHES_CACHE_TIME = datetime.datetime.now()
         return []
@@ -917,7 +914,7 @@ def get_live_matches_nba() -> list:
     try:
         today = datetime.datetime.now()
         
-        for day_offset in range(7):
+        for day_offset in range(-1, 7):
             search_date = today + datetime.timedelta(days=day_offset)
             date_str = search_date.strftime("%Y%m%d")
             
@@ -2720,6 +2717,7 @@ def get_team_ats_record(sport: str, team_name: str, vs_type: str = "overall") ->
         
         # Parcourir les records pour trouver ATS
         ats_win, ats_loss = 0, 0
+        found_ats = False
         for rec in records:
             name = rec.get('name', '').lower()
             if 'against spread' in name or 'ats' in name:
@@ -2729,7 +2727,16 @@ def get_team_ats_record(sport: str, team_name: str, vs_type: str = "overall") ->
                 if len(parts) >= 2:
                     ats_win = int(parts[0])
                     ats_loss = int(parts[1])
+                    found_ats = True
                 break
+        
+        # ⚠️ ESPN ne fournit PAS de record ATS dans son API publique —
+        # cette boucle ne trouve donc jamais rien. Retourner {} (pas de
+        # donnée) plutôt qu'un faux 0.5 neutre qui, traité comme une vraie
+        # donnée par le scoring, déclenchait une pénalité fixe identique
+        # pour CHAQUE équipe (d'où des scores de confiance toujours pareils).
+        if not found_ats:
+            return {}
         
         ats_pct = ats_win / max(1, ats_win + ats_loss) if (ats_win + ats_loss) > 0 else 0.5
         
