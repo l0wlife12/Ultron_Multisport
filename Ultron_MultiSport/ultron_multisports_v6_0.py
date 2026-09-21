@@ -5067,14 +5067,8 @@ async def auto_send_pronostics(context):
 
     heure_qc = quebec_time.strftime('%H:%M')
 
-    # ── Générer les parlays suggérés ──────────────────────────────────────
-    parlays = []
-    try:
-        parlays = analyze_and_suggest_parlays(max_suggestions=1)
-        if parlays:
-            logger.info(f"✅ {len(parlays)} parlay(s) suggéré(s)")
-    except Exception as _parlay_err:
-        logger.warning(f"⚠️ Parlay analysis: {_parlay_err}")
+    # (Génération automatique des parlays retirée du message VIP — le calcul
+    # reste disponible via la commande manuelle /parlays)
 
     # ── Canal FREE : 1 seul pick ML en format COMPACT ────────────────────
     free = all_picks[0]
@@ -5176,31 +5170,8 @@ async def auto_send_pronostics(context):
             if p.get('ou_pick'):
                 msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']} — Confiance: {p.get('ou_confidence', 0)}/100\n"
         
-        msg_vip += "\n═══════════════════════════════════════════\n"
-        msg_vip += "🎯  PARLAYS BONUS\n"
-        msg_vip += "═══════════════════════════════════════════\n"
-        for i, parlay in enumerate(parlays, 1):
-            picks = parlay["picks"]
-            odds = parlay["combined_odds"]
-            msg_vip += f"\n{i}️⃣  PARLAY {len(picks)}-WAY\n"
-            msg_vip += f"   Cotes: {odds:.2f}\n"
-            msg_vip += "   Picks:\n"
-            for pred in picks:
-                # Format ultra-compact
-                away_short = pred['away'].split()[-1]
-                home_short = pred['home'].split()[-1]
-                pick_text = pred['pick'].upper()
-                
-                if "ML" in pick_text:
-                    team_short = pick_text.replace(" ML", "").split()[-1]
-                    msg_vip += f"      • {team_short} ML\n"
-                elif "OVER" in pick_text or "UNDER" in pick_text:
-                    ou_line = pred.get('pick_line', 8.5)
-                    direction = "Over" if "OVER" in pick_text else "Under"
-                    msg_vip += f"      • {away_short} vs {home_short} {direction} {ou_line}\n"
-                else:
-                    msg_vip += f"      • {pick_text}\n"
-        
+        # Section PARLAYS BONUS retirée du canal VIP (demande utilisateur)
+
         msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
         msg_vip += "     Bonne chance! 🍀"
