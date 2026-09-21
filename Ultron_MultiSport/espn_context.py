@@ -24,8 +24,9 @@ ESPN_CORE = "https://sports.core.api.espn.com/v2/sports"
 
 SPORT_PATHS = {
     'NBA': 'basketball/nba',
-    'NHL': 'icehockey/nhl',
+    'NHL': 'hockey/nhl',
     'MLB': 'baseball/mlb',
+    'NFL': 'football/nfl',
 }
 
 # Core API paths (different from site API)
@@ -33,6 +34,7 @@ CORE_SPORT_MAP = {
     'NBA': ('basketball', 'nba'),
     'NHL': ('hockey', 'nhl'),
     'MLB': ('baseball', 'mlb'),
+    'NFL': ('football', 'nfl'),
 }
 
 # Module-level cache for athlete names (valid for process lifetime)
@@ -119,6 +121,8 @@ def _estimate_injury_impact(athlete: dict, status: str, sport: str) -> float:
         position_impact = {'G': 8.0, 'C': 4.0, 'LW': 3.0, 'RW': 3.0, 'D': 3.5}.get(position, 2.0)
     elif sport == 'MLB':
         position_impact = {'P': 8.0, 'C': 4.0, 'SS': 3.5, '2B': 3.0, '3B': 3.0, 'OF': 2.5}.get(position, 2.0)
+    elif sport == 'NFL':
+        position_impact = {'QB': 9.0, 'RB': 4.0, 'WR': 3.5, 'TE': 2.5, 'OL': 2.0, 'DL': 2.5, 'LB': 2.5, 'DB': 2.5, 'K': 1.5}.get(position, 2.0)
     else:
         position_impact = 2.0
 
@@ -317,7 +321,7 @@ def format_injuries_alert(context: dict) -> str:
     alerts = []
 
     for sport, games in context.items():
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(sport, "🎯")
+        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}.get(sport, "🎯")
         for game in games:
             for side in ['home', 'away']:
                 team  = game[f'{side}_team']
@@ -490,6 +494,8 @@ def _period_label(sport: str, period: int) -> str:
         return {1: '1re', 2: '2e', 3: '3e'}.get(period, f"OT{period - 3}")
     elif sport == 'MLB':
         return {1: '1re', 2: '2e', 3: '3e', 4: '4e', 5: '5e', 6: '6e', 7: '7e', 8: '8e', 9: '9e'}.get(period, f"IN{period}")
+    elif sport == 'NFL':
+        return f"Q{period}" if period <= 4 else f"OT{period - 4}"
     return f"P{period}"
 
 
@@ -501,6 +507,8 @@ def _get_display_keys(sport: str) -> list:
         return ['G', 'A', 'PTS', '+/-', 'SOG', 'TOI']
     elif sport == 'MLB':
         return ['AVG', 'HR', 'RBI', 'OBP', 'ERA', 'SO']
+    elif sport == 'NFL':
+        return ['YDS', 'TD', 'INT', 'CMP', 'ATT', 'REC']
     return ['PTS']
 
 
@@ -510,7 +518,7 @@ def format_boxscore_message(sport: str, game_id: str) -> str:
     if not data:
         return "❌ Box score indisponible pour ce match."
 
-    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(sport, "🎯")
+    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}.get(sport, "🎯")
     away   = data['away'] or '?'
     home   = data['home'] or '?'
     status = data.get('status', '')
@@ -556,7 +564,7 @@ def format_all_boxscores(sport: str) -> List[str]:
     """
     games = get_live_game_ids(sport)
     if not games:
-        sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(sport, "🎯")
+        sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}.get(sport, "🎯")
         return [f"{sport_emoji} Aucun match {sport} aujourd'hui."]
     messages = []
     for g in games:
@@ -861,7 +869,7 @@ def format_leaders_message(sport: str) -> str:
     if not categories:
         return ""  # Rien à envoyer — le caller doit ignorer silencieusement
 
-    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(sport, "🎯")
+    sport_emoji = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}.get(sport, "🎯")
     ranks       = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
 
     msg  = f"{sport_emoji} LEADERS {sport} — SAISON EN COURS\n"
