@@ -10,6 +10,7 @@ VERSION_BUILD = "2026-05-17_MLB_FIX"
 import math
 import os
 import sys
+import json
 import logging
 import warnings
 import datetime
@@ -287,6 +288,8 @@ _ODDS_API_CACHE_TTL = 14400  # 4 heures
 _ODDS_API_SPORT_KEYS = {
     "nba":     "basketball_nba",
     "nhl":     "icehockey_nhl",
+    "mlb":     "baseball_mlb",
+    "nfl":     "americanfootball_nfl",
     "mondial": "soccer_fifa_world_cup",
 }
 
@@ -395,6 +398,45 @@ MLB_TEAM_STATS = {
     "pirates": {"strength": 71, "r": 3.5, "ra": 4.4, "wins": 63, "losses": 99, "gp": 162},
     "phillies": {"strength": 88, "r": 4.6, "ra": 3.4, "wins": 90, "losses": 72, "gp": 162},
     "angels": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NFL TEAMS STATS (2026 Season) - Advanced Metrics
+# ═══════════════════════════════════════════════════════════════════════════
+# Saison de 17 matchs. ppg/pa = points marqués/alloués par match.
+NFL_TEAM_STATS = {
+    "chiefs":     {"strength": 91, "ppg": 26.8, "pa": 19.2, "wins": 13, "losses": 4,  "gp": 17},
+    "bills":      {"strength": 89, "ppg": 27.5, "pa": 20.1, "wins": 12, "losses": 5,  "gp": 17},
+    "ravens":     {"strength": 88, "ppg": 26.2, "pa": 19.8, "wins": 12, "losses": 5,  "gp": 17},
+    "bengals":    {"strength": 82, "ppg": 24.5, "pa": 22.3, "wins": 10, "losses": 7,  "gp": 17},
+    "browns":     {"strength": 74, "ppg": 19.8, "pa": 23.5, "wins": 7,  "losses": 10, "gp": 17},
+    "steelers":   {"strength": 80, "ppg": 22.1, "pa": 20.5, "wins": 10, "losses": 7,  "gp": 17},
+    "texans":     {"strength": 83, "ppg": 24.0, "pa": 20.8, "wins": 10, "losses": 7,  "gp": 17},
+    "colts":      {"strength": 76, "ppg": 21.5, "pa": 23.0, "wins": 8,  "losses": 9,  "gp": 17},
+    "jaguars":    {"strength": 73, "ppg": 20.2, "pa": 24.1, "wins": 7,  "losses": 10, "gp": 17},
+    "titans":     {"strength": 68, "ppg": 17.8, "pa": 25.5, "wins": 5,  "losses": 12, "gp": 17},
+    "broncos":    {"strength": 81, "ppg": 22.8, "pa": 19.9, "wins": 10, "losses": 7,  "gp": 17},
+    "chargers":   {"strength": 79, "ppg": 22.4, "pa": 21.2, "wins": 9,  "losses": 8,  "gp": 17},
+    "raiders":    {"strength": 70, "ppg": 18.9, "pa": 24.8, "wins": 6,  "losses": 11, "gp": 17},
+    "patriots":   {"strength": 84, "ppg": 24.8, "pa": 19.5, "wins": 11, "losses": 6,  "gp": 17},
+    "dolphins":   {"strength": 75, "ppg": 21.2, "pa": 23.2, "wins": 8,  "losses": 9,  "gp": 17},
+    "jets":       {"strength": 69, "ppg": 18.2, "pa": 25.0, "wins": 5,  "losses": 12, "gp": 17},
+    "cowboys":    {"strength": 78, "ppg": 23.5, "pa": 22.8, "wins": 9,  "losses": 8,  "gp": 17},
+    "eagles":     {"strength": 87, "ppg": 25.9, "pa": 20.0, "wins": 12, "losses": 5,  "gp": 17},
+    "giants":     {"strength": 67, "ppg": 17.5, "pa": 25.8, "wins": 5,  "losses": 12, "gp": 17},
+    "commanders": {"strength": 85, "ppg": 25.1, "pa": 21.0, "wins": 11, "losses": 6,  "gp": 17},
+    "packers":    {"strength": 86, "ppg": 25.5, "pa": 20.3, "wins": 11, "losses": 6,  "gp": 17},
+    "vikings":    {"strength": 77, "ppg": 22.0, "pa": 22.5, "wins": 9,  "losses": 8,  "gp": 17},
+    "bears":      {"strength": 78, "ppg": 22.6, "pa": 21.8, "wins": 9,  "losses": 8,  "gp": 17},
+    "lions":      {"strength": 90, "ppg": 28.2, "pa": 19.0, "wins": 13, "losses": 4,  "gp": 17},
+    "49ers":      {"strength": 83, "ppg": 24.3, "pa": 20.6, "wins": 10, "losses": 7,  "gp": 17},
+    "seahawks":   {"strength": 80, "ppg": 23.0, "pa": 21.5, "wins": 10, "losses": 7,  "gp": 17},
+    "rams":       {"strength": 82, "ppg": 23.9, "pa": 21.1, "wins": 10, "losses": 7,  "gp": 17},
+    "cardinals":  {"strength": 72, "ppg": 20.0, "pa": 24.0, "wins": 7,  "losses": 10, "gp": 17},
+    "saints":     {"strength": 71, "ppg": 19.5, "pa": 24.3, "wins": 6,  "losses": 11, "gp": 17},
+    "buccaneers": {"strength": 79, "ppg": 22.7, "pa": 21.9, "wins": 9,  "losses": 8,  "gp": 17},
+    "falcons":    {"strength": 76, "ppg": 21.8, "pa": 22.6, "wins": 8,  "losses": 9,  "gp": 17},
+    "panthers":   {"strength": 65, "ppg": 16.8, "pa": 26.5, "wins": 4,  "losses": 13, "gp": 17},
 }
 
 # Note: Odds data is fetched from Odds API in real-time
@@ -516,7 +558,40 @@ _TEAM_STAT_KEYS = {
     'NBA': ('ppg', 'pa', 200),
     'NHL': ('gf',  'ga',  10),
     'MLB': ('r',  'ra',  10),
+    'NFL': ('ppg', 'pa', 100),
 }
+
+# Total moyen ligue (utilisé pour estimer une ligne O/U plausible quand
+# les cotes réelles du marché ne sont pas disponibles)
+_LEAGUE_AVG_TOTAL = {
+    'NBA': 225.0,
+    'NHL': 5.8,
+    'MLB': 8.5,
+    'NFL': 44.5,
+}
+
+
+def estimate_market_line(sport: str, projected_total: float, blend: float = 0.5) -> float:
+    """
+    Estime une ligne O/U plausible pour CE match précis, en l'absence de
+    cotes réelles du marché — au lieu d'une constante identique pour tous
+    les matchs (ex: toujours 5.5 en NHL peu importe les équipes).
+
+    Mélange la projection du modèle (spécifique au match) avec la moyenne
+    de la ligue (ancrage réaliste), puis arrondit au 0.5 le plus proche en
+    évitant les lignes rondes (jamais utilisées par les bookmakers, pour
+    éviter les push).
+
+    ⚠️ Reste une ESTIMATION du modèle, pas la vraie ligne d'un bookmaker.
+    Quand les vraies cotes du marché sont disponibles (Odds API), elles
+    doivent toujours avoir priorité sur cette estimation.
+    """
+    league_avg = _LEAGUE_AVG_TOTAL.get(sport, projected_total)
+    blended = blend * projected_total + (1 - blend) * league_avg
+    line = round(blended * 2) / 2
+    if line == int(line):  # éviter les lignes rondes
+        line += 0.5
+    return line
 
 
 def get_dynamic_team_stats(sport: str) -> dict:
@@ -531,7 +606,7 @@ def get_dynamic_team_stats(sport: str) -> dict:
     if cached_time and (now - cached_time).total_seconds() < _TEAM_STATS_TTL_SECONDS:
         return _TEAM_STATS_CACHE[sport]
 
-    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'MLB': MLB_TEAM_STATS}.get(sport, {})
+    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'MLB': MLB_TEAM_STATS, 'NFL': NFL_TEAM_STATS}.get(sport, {})
     if not ESPN_CONTEXT_AVAILABLE:
         return base
 
@@ -540,7 +615,7 @@ def get_dynamic_team_stats(sport: str) -> dict:
         if not espn_data:
             return base
 
-        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'MLB': find_team_mlb}.get(sport)
+        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'MLB': find_team_mlb, 'NFL': find_team_nfl}.get(sport)
         off_key, def_key, threshold = _TEAM_STAT_KEYS.get(sport, ('ppg', 'pa', 200))
 
         live = {}
@@ -955,6 +1030,62 @@ def get_live_matches_nba() -> list:
     
     return []
 
+MATCHES_CACHE_NFL = None
+
+def get_live_matches_nfl() -> list:
+    """Récupère les matchs NFL en direct (ESPN API)"""
+    global MATCHES_CACHE_NFL, MATCHES_CACHE_TIME
+
+    if MATCHES_CACHE_NFL and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 120:
+            return MATCHES_CACHE_NFL
+
+    try:
+        today = datetime.datetime.now()
+
+        # NFL joue par semaine (surtout dim/lun/jeu) — fenêtre plus large
+        for day_offset in range(-1, 8):
+            search_date = today + datetime.timedelta(days=day_offset)
+            date_str = search_date.strftime("%Y%m%d")
+
+            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={date_str}"
+            resp = requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_matches = []
+
+                for event in data.get('events', []):
+                    try:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+
+                        blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
+                        if not any(word in status_desc for word in blocked_statuses):
+                            if len(competitors) >= 2:
+                                away = competitors[0].get('team', {}).get('name', '').strip()
+                                home = competitors[1].get('team', {}).get('name', '').strip()
+
+                                if away and home:
+                                    daily_matches.append((away, home))
+                    except Exception:
+                        continue
+
+                if daily_matches:
+                    MATCHES_CACHE_NFL = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    logger.info(f"✅ {len(daily_matches)} matchs NFL depuis ESPN")
+                    return daily_matches
+
+        logger.info("ℹ️ Aucun match NFL trouvé sur ESPN (hors saison?)")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur ESPN NFL: {e}")
+
+    return []
+
 def find_team_nhl(name_input: str) -> str | None:
     """Trouve une équipe NHL par son nom - avec table de correspondance"""
     name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
@@ -1097,6 +1228,57 @@ def find_team_nba(name_input: str) -> str | None:
             return team_key
     
     logger.warning(f"⚠️ Équipe NBA non trouvée: {name_input}")
+    return None
+
+def find_team_nfl(name_input: str) -> str | None:
+    """Trouve une équipe NFL par son nom - avec table de correspondance"""
+    name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
+
+    team_aliases = {
+        "chiefs":     ["kansas_city_chiefs", "chiefs"],
+        "bills":      ["buffalo_bills", "bills"],
+        "ravens":     ["baltimore_ravens", "ravens"],
+        "bengals":    ["cincinnati_bengals", "bengals"],
+        "browns":     ["cleveland_browns", "browns"],
+        "steelers":   ["pittsburgh_steelers", "steelers"],
+        "texans":     ["houston_texans", "texans"],
+        "colts":      ["indianapolis_colts", "colts"],
+        "jaguars":    ["jacksonville_jaguars", "jaguars", "jags"],
+        "titans":     ["tennessee_titans", "titans"],
+        "broncos":    ["denver_broncos", "broncos"],
+        "chargers":   ["los_angeles_chargers", "chargers"],
+        "raiders":    ["las_vegas_raiders", "raiders"],
+        "patriots":   ["new_england_patriots", "patriots", "pats"],
+        "dolphins":   ["miami_dolphins", "dolphins"],
+        "jets":       ["new_york_jets", "jets"],
+        "cowboys":    ["dallas_cowboys", "cowboys"],
+        "eagles":     ["philadelphia_eagles", "eagles"],
+        "giants":     ["new_york_giants", "giants"],
+        "commanders": ["washington_commanders", "commanders"],
+        "packers":    ["green_bay_packers", "packers"],
+        "vikings":    ["minnesota_vikings", "vikings"],
+        "bears":      ["chicago_bears", "bears"],
+        "lions":      ["detroit_lions", "lions"],
+        "49ers":      ["san_francisco_49ers", "niners", "49ers"],
+        "seahawks":   ["seattle_seahawks", "seahawks"],
+        "rams":       ["los_angeles_rams", "rams"],
+        "cardinals":  ["arizona_cardinals", "cardinals"],
+        "saints":     ["new_orleans_saints", "saints"],
+        "buccaneers": ["tampa_bay_buccaneers", "buccaneers", "bucs"],
+        "falcons":    ["atlanta_falcons", "falcons"],
+        "panthers":   ["carolina_panthers", "panthers"],
+    }
+
+    for team_key, aliases in team_aliases.items():
+        for alias in aliases:
+            if alias == name_clean or name_clean in alias or alias in name_clean:
+                return team_key
+
+    for team_key in NFL_TEAM_STATS.keys():
+        if team_key in name_clean or name_clean in team_key:
+            return team_key
+
+    logger.warning(f"⚠️ Équipe NFL non trouvée: {name_input}")
     return None
 
 # Dicts vides sécurisés — les vraies cotes viennent de l'Odds API en temps réel.
@@ -1248,15 +1430,126 @@ def get_best_odds_nba(away_team: str, home_team: str) -> dict:
     }
 
 
+def get_best_odds_nfl(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour NFL"""
+    away_clean = find_team_nfl(away_team) or away_team.lower()
+    home_clean = find_team_nfl(home_team) or home_team.lower()
+
+    _nfl_ts = get_dynamic_team_stats('NFL')
+    away_stats = _nfl_ts.get(away_clean, {"strength": 78})
+    home_stats = _nfl_ts.get(home_clean, {"strength": 78})
+
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.75, "book": "DEFAULT"}
+        best_home = {"odds": 2.05, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.05, "book": "DEFAULT"}
+        best_home = {"odds": 1.75, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
+
+    logger.debug(f"Cotes pour {away_clean} @ {home_clean}: AWAY={best_away['odds']:.2f}, HOME={best_home['odds']:.2f}")
+
+    return {
+        "away_ml": best_away["odds"],
+        "home_ml": best_home["odds"],
+        "away_book": best_away["book"],
+        "home_book": best_home["book"],
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ODDS API EN TEMPS RÉEL — économie maximale de requêtes
 # Appelé UNIQUEMENT depuis auto_send_pronostics (avant-match)
 # Cache 4h par sport = max ~3 requêtes/jour si matchs existent
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _odds_cache_db_connect():
+    """Connexion Postgres pour le cache Odds API (même pattern que pick_memory/brain)."""
+    if not os.environ.get("DATABASE_URL"):
+        return None
+    try:
+        import psycopg2
+        url = os.environ["DATABASE_URL"].replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url)
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB connexion: {e}")
+        return None
+
+
+def _odds_cache_db_init():
+    conn = _odds_cache_db_connect()
+    if not conn:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS odds_cache_store (
+                        sport_key  TEXT PRIMARY KEY,
+                        data       JSONB NOT NULL,
+                        fetched_at TIMESTAMPTZ NOT NULL
+                    )
+                """)
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB init: {e}")
+    finally:
+        conn.close()
+
+
+def _odds_cache_db_load(sport_key: str):
+    """Charge le cache depuis Postgres (survit aux redémarrages Railway)."""
+    conn = _odds_cache_db_connect()
+    if not conn:
+        return None
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data, fetched_at FROM odds_cache_store WHERE sport_key = %s",
+                    (sport_key,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {"data": row[0], "fetched_at": row[1].replace(tzinfo=None)}
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB load ({sport_key}): {e}")
+    finally:
+        conn.close()
+    return None
+
+
+def _odds_cache_db_save(sport_key: str, data: list, fetched_at: datetime.datetime):
+    conn = _odds_cache_db_connect()
+    if not conn:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO odds_cache_store (sport_key, data, fetched_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (sport_key) DO UPDATE
+                    SET data = EXCLUDED.data, fetched_at = EXCLUDED.fetched_at
+                    """,
+                    (sport_key, json.dumps(data), fetched_at)
+                )
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB save ({sport_key}): {e}")
+    finally:
+        conn.close()
+
+
+_odds_cache_db_init()
+
+
 def fetch_odds_api(sport_key: str) -> list:
     """
     Appelle The Odds API une seule fois par tranche de 4h par sport.
+    Le cache est persisté dans Postgres pour survivre aux redémarrages Railway.
     Retourne la liste brute d'événements avec cotes (h2h + spreads + totals).
     Retourne [] si clé absente, quota dépassé ou erreur réseau.
     """
@@ -1265,7 +1558,14 @@ def fetch_odds_api(sport_key: str) -> list:
         return []
 
     now = datetime.datetime.now()
+
     cached = _ODDS_API_CACHE.get(sport_key)
+    if not cached:
+        db_cached = _odds_cache_db_load(sport_key)
+        if db_cached:
+            cached = db_cached
+            _ODDS_API_CACHE[sport_key] = db_cached
+
     if cached:
         elapsed = (now - cached["fetched_at"]).total_seconds()
         if elapsed < _ODDS_API_CACHE_TTL:
@@ -1292,6 +1592,7 @@ def fetch_odds_api(sport_key: str) -> list:
         if resp.status_code == 200:
             data = resp.json()
             _ODDS_API_CACHE[sport_key] = {"data": data, "fetched_at": now}
+            _odds_cache_db_save(sport_key, data, now)
             logger.info(f"✅ Odds API {sport_key}: {len(data)} matchs | restantes={remaining} utilisées={used}")
             return data
         elif resp.status_code == 401:
@@ -1633,7 +1934,7 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     # 3️⃣ O/U SCORING (Total Buts L10)
     # ═══════════════════════════════════════════════════════════════════════
     projected_total = away_stats["gf"] + home_stats["gf"]
-    ou_line = 5.5
+    ou_line = estimate_market_line("NHL", projected_total)
     
     away_l10_ppg = away_stats.get("gf", 3.0)
     home_l10_ppg = home_stats.get("gf", 3.0)
@@ -1894,7 +2195,7 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     # 3️⃣ O/U SCORING (Total Runs L10)
     # ═══════════════════════════════════════════════════════════════════════
     projected_total = away_stats["r"] + home_stats["r"]
-    ou_line = 8.5  # ligne typique MLB
+    ou_line = estimate_market_line("MLB", projected_total)
     
     away_l10_ppg = away_stats.get("r", 4.2)
     home_l10_ppg = home_stats.get("r", 4.2)
@@ -3662,7 +3963,7 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     nba_away = NBA_TEAM_STATS.get(away_clean, {"ppg": 115.0, "pa": 112.0})
     nba_home = NBA_TEAM_STATS.get(home_clean, {"ppg": 115.0, "pa": 112.0})
     projected_total = nba_away["ppg"] + nba_home["ppg"]
-    ou_line = 225.5
+    ou_line = estimate_market_line("NBA", projected_total)
     
     away_l10_ppg = nba_away.get("ppg", 115.0)
     home_l10_ppg = nba_home.get("ppg", 115.0)
@@ -3710,6 +4011,147 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         "ou_confidence": ou_confidence,
         "ou_status": ou_status,
     }
+
+
+def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction NFL avec MoneyLine Guide (3 pillars: ML + SPREAD + O/U)"""
+    away_clean = find_team_nfl(away_team) or away_team.lower()
+    home_clean = find_team_nfl(home_team) or home_team.lower()
+
+    odds_data = get_best_odds_nfl(away_clean, home_clean)
+    best_away_ml = odds_data["away_ml"]
+    best_home_ml = odds_data["home_ml"]
+
+    model_source = "STATS"
+    _nfl_ts = get_dynamic_team_stats('NFL')
+    away_stats = _nfl_ts.get(away_clean, {"strength": 78, "ppg": 22.0, "pa": 22.0, "wins": 8, "losses": 9})
+    home_stats = _nfl_ts.get(home_clean, {"strength": 78, "ppg": 22.0, "pa": 22.0, "wins": 8, "losses": 9})
+
+    away_ppg_diff = away_stats["ppg"] - home_stats["pa"]
+    home_ppg_diff = home_stats["ppg"] - away_stats["pa"]
+
+    point_diff = away_ppg_diff - home_ppg_diff - 1.5  # Avantage domicile NFL (~1.5 pt)
+
+    try:
+        win_prob_away = 1 / (1 + math.exp(-point_diff / 7.5))
+    except Exception:
+        win_prob_away = 0.5 + (point_diff / 30.0)
+
+    prob_away_win = max(0.05, min(0.95, win_prob_away))
+    prob_home_win = 1.0 - prob_away_win
+
+    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
+    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    prob_home_market = 1.0 - market_consensus_away
+
+    _adj_nfl      = get_model_adjustments("NFL")
+    _model_w_nfl  = _adj_nfl.get("model_weight", 0.55)
+    _conf_cal_nfl = _adj_nfl.get("confidence_scale", 1.0)
+    _home_d_nfl   = _adj_nfl.get("home_advantage_delta", 0.0)
+    prob_home_win = max(0.05, min(0.95, prob_home_win + _home_d_nfl))
+
+    blended_prob = (_model_w_nfl * prob_home_win) + ((1.0 - _model_w_nfl) * prob_home_market)
+    blended_prob = max(0.05, min(0.95, blended_prob))
+    prob_away = 1.0 - blended_prob
+
+    ev_away = (best_away_ml - 1.0) * prob_away - blended_prob
+    ev_home = (best_home_ml - 1.0) * blended_prob - prob_away
+
+    logger.debug(f"{away_team.upper()} @ {home_team.upper()}: [{model_source}] | Cotes: {best_away_ml:.2f}/{best_home_ml:.2f} | Blended: {blended_prob:.1%} | EV: {ev_away:.4f}/{ev_home:.4f}")
+
+    ml_score = score_moneyline_enhanced(away_team, home_team, prob_away, blended_prob, best_away_ml, best_home_ml, "NFL")
+    ml_confidence = ml_score["confidence"]
+    ml_send = ml_score["send"]
+
+    if ev_away > ev_home:
+        ml_pick = f"{away_team.upper()} ML"
+        ml_odds = best_away_ml
+        ml_book = odds_data["away_book"]
+        ml_ev = ev_away
+    else:
+        ml_pick = f"{home_team.upper()} ML"
+        ml_odds = best_home_ml
+        ml_book = odds_data["home_book"]
+        ml_ev = ev_home
+
+    if ml_confidence >= 55 and ml_ev > -0.02:
+        ml_status = "✅ BUY"
+    elif ml_confidence >= 50 or ml_ev > -0.005:
+        ml_status = "👀 MONITORING"
+    else:
+        ml_status = "⏸ PASS"
+
+    estimated_spread = (prob_away - 0.5) * 16.0
+    raw_spread = round(estimated_spread * 2) / 2
+
+    if raw_spread > 0:
+        spread_pick = f"{away_team.upper()} -{raw_spread}"
+    elif raw_spread < 0:
+        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+
+    spread_odds = 1.909
+    spread_score = score_spread_enhanced(raw_spread, prob_away, blended_prob, away_team, home_team, "NFL")
+    spread_confidence = spread_score["confidence"]
+    spread_send = spread_score["send"]
+
+    if spread_confidence >= 58:
+        spread_status = "✅ BUY"
+    elif spread_confidence >= 50:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
+
+    nfl_away = NFL_TEAM_STATS.get(away_clean, {"ppg": 22.0, "pa": 22.0})
+    nfl_home = NFL_TEAM_STATS.get(home_clean, {"ppg": 22.0, "pa": 22.0})
+    projected_total = nfl_away["ppg"] + nfl_home["ppg"]
+    ou_line = estimate_market_line("NFL", projected_total)
+
+    away_l10_ppg = nfl_away.get("ppg", 22.0)
+    home_l10_ppg = nfl_home.get("ppg", 22.0)
+
+    ou_score = score_ou_enhanced(projected_total, ou_line, away_team, home_team, "NFL", away_l10_ppg, home_l10_ppg)
+    ou_confidence = ou_score["confidence"]
+    ou_send = ou_score["send"]
+
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+    else:
+        ou_pick = f"UNDER {ou_line}"
+    ou_odds = 1.909
+
+    if ou_confidence >= 58:
+        ou_status = "✅ BUY"
+    elif ou_confidence >= 50:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
+
+    return {
+        "pick": ml_pick,
+        "odds": f"{ml_odds:.2f}",
+        "confidence": ml_confidence,
+        "ev": f"{ml_ev:.4f}",
+        "ev_pct": f"{ml_ev*100:.2f}%",
+        "status": ml_status,
+        "bookmaker": ml_book,
+        "model": model_source,
+        "ml_pick": ml_pick,
+        "ml_odds": f"{ml_odds:.2f}",
+        "ml_confidence": ml_confidence,
+        "ml_ev_pct": f"{ml_ev*100:.2f}%",
+        "ml_status": ml_status,
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_confidence,
+        "spread_status": spread_status,
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_confidence,
+        "ou_status": ou_status,
+    }
+
 
 import time as _time
 from functools import wraps
@@ -3846,6 +4288,35 @@ async def mlb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"❌ mlb_matches: {e}")
         await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
+async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes NFL en direct"""
+    try:
+        matches = get_live_matches_nfl()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            msg = "❌ Aucun match NFL actif aujourd'hui\n"
+            msg += "(Tous terminés ou pas de match programmé — le NFL joue surtout dim/lun/jeu)"
+            await update.message.reply_text(msg)
+            return
+
+        msg = f"🏈 MATCHS NFL EN DIRECT\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:20} @ {home:20}\n"
+
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} matchs en direct\n"
+        msg += "💡 Utilise /pronostics nfl pour les prédictions"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ nfl_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+
 async def mondial_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Affiche les matchs FIFA Coupe du Monde 2026"""
     try:
@@ -3915,7 +4386,8 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "Exemple:\n"
         msg += "/pronostics nba - Pronostics NBA\n"
         msg += "/pronostics nhl - Pronostics NHL 🏒\n"
-        msg += "/pronostics mlb - Pronostics MLB ⚾"
+        msg += "/pronostics mlb - Pronostics MLB ⚾\n"
+        msg += "/pronostics nfl - Pronostics NFL 🏈"
         await update.message.reply_text(msg)
         return
     
@@ -3927,9 +4399,11 @@ async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await pronostics_nba(update, context)
     elif sport == "mlb":
         await pronostics_mlb(update, context)
+    elif sport == "nfl":
+        await pronostics_nfl(update, context)
     else:
         msg = f"❌ Sport '{sport}' non reconnu\n"
-        msg += "Sports disponibles: nba, nhl, mlb"
+        msg += "Sports disponibles: nba, nhl, mlb, nfl"
         await update.message.reply_text(msg)
 
 async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4144,6 +4618,73 @@ async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erreur MLB: {e}")
 
 
+async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics NFL"""
+    try:
+        matches = get_live_matches_nfl()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            await update.message.reply_text("❌ Aucun match NFL actuel")
+            return
+
+        predictions = []
+        errors = []
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nfl(away, home)
+                predictions.append((away, home, pred))
+            except Exception as e:
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+                continue
+
+        if not predictions:
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NFL\n\n🔍 Erreurs:\n{error_details}")
+            return
+
+        buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
+        monitoring_picks = [(a, h, p) for a, h, p in predictions if "MONITORING" in p['status']]
+        pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
+
+        msg1 = "🏈 ULTRON v6.0 - PRÉDICTIONS NFL\n"
+        msg1 += "═" * 70 + "\n"
+        msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
+        msg1 += f"📡 {len(matches)} matchs NFL en direct | {len(predictions)} avec prédictions\n"
+        msg1 += "═" * 70 + "\n\n"
+
+        if buy_picks:
+            msg1 += "✅ ACHETER - Meilleure valeur\n"
+            msg1 += "─" * 70 + "\n\n"
+            for i, (away, home, pred) in enumerate(buy_picks, 1):
+                msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg1 += f"   🏈 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg1 += "✅ Aucun pick BUY actuellement\n\n"
+
+        await update.message.reply_text(msg1)
+
+        msg2 = "👀 MONITORING - À surveiller\n"
+        msg2 += "─" * 70 + "\n\n"
+
+        if monitoring_picks:
+            for i, (away, home, pred) in enumerate(monitoring_picks, 1):
+                msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg2 += "Aucun monitoring\n\n"
+
+        msg2 += "─" * 70 + "\n"
+        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
+
+        await update.message.reply_text(msg2)
+    except Exception as e:
+        logger.error(f"❌ pronostics_nfl: {e}")
+        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+
+
 async def pronostics_mondial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Pronostics Coupe du Monde FIFA 2026 — Dixon-Coles + Odds API"""
     try:
@@ -4193,11 +4734,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "COMMANDES MATCHS (Équipes en direct):\n"
     msg += "/nba - Équipes NBA 🏀\n"
     msg += "/nhl - Équipes NHL 🏒\n"
-    msg += "/mlb - Équipes MLB ⚾\n\n"
+    msg += "/mlb - Équipes MLB ⚾\n"
+    msg += "/nfl - Équipes NFL 🏈\n\n"
     msg += "COMMANDES PRONOSTICS:\n"
     msg += "/pronostics nba - Prédictions NBA\n"
     msg += "/pronostics nhl - Prédictions NHL 🏒\n"
-    msg += "/pronostics mlb - Prédictions MLB ⚾\n\n"
+    msg += "/pronostics mlb - Prédictions MLB ⚾\n"
+    msg += "/pronostics nfl - Prédictions NFL 🏈\n\n"
     msg += "PARLAYS (Combinaisons multiiples):\n"
     msg += "/parlays - Auto-suggestions de parlays 🎯\n"
     msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
@@ -4758,6 +5301,7 @@ async def auto_send_pronostics(context):
         ("basketball/nba", "nba", "🏀"),
         ("hockey/nhl", "nhl", "🏒"),
         ("baseball/mlb", "mlb", "⚾"),
+        ("football/nfl", "nfl", "🏈"),
     ]
 
     upcoming_matches = []  # [(sport_key, emoji, away, home)]
@@ -4879,6 +5423,8 @@ async def auto_send_pronostics(context):
             injuries_by_sport[sk] = get_injuries('hockey', 'nhl')
         elif sk == "mlb":
             injuries_by_sport[sk] = get_injuries('baseball', 'mlb')
+        elif sk == "nfl":
+            injuries_by_sport[sk] = get_injuries('football', 'nfl')
     logger.info(f"✅ Blessures chargées pour: {', '.join([f'{sk}({len(injuries_by_sport[sk])})' for sk in injuries_by_sport])}")
 
     # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
@@ -4904,6 +5450,8 @@ async def auto_send_pronostics(context):
                 pred = generate_prediction_nhl(away, home)
             elif sport_key == "mlb":
                 pred = generate_prediction_mlb(away, home)
+            elif sport_key == "nfl":
+                pred = generate_prediction_nfl(away, home)
             else:
                 logger.debug(f"⏭️ Sport non géré dans auto_send: {sport_key}")
                 continue
@@ -5056,7 +5604,10 @@ async def auto_send_pronostics(context):
     if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
         filtered = []
         for p in all_picks:
-            sport_key = "NBA" if "🏀" in p["label"] else ("NHL" if "🏒" in p["label"] else "NFL")
+            sport_key = ("NBA" if "🏀" in p["label"] else
+                         "NHL" if "🏒" in p["label"] else
+                         "MLB" if "⚾" in p["label"] else
+                         "NFL")
             if should_send_pick(sport_key, p["confidence"], p.get("pick_type", "ML")):
                 filtered.append(p)
             else:
@@ -5187,7 +5738,10 @@ async def auto_send_pronostics(context):
         today_date = quebec_time.strftime('%Y-%m-%d')
         for p in all_picks:
             # On extrait le sport_key depuis le label (emoji)
-            sport_label = "NBA" if "🏀" in p["label"] else ("NHL" if "🏒" in p["label"] else "NFL")
+            sport_label = ("NBA" if "🏀" in p["label"] else
+                           "NHL" if "🏒" in p["label"] else
+                           "MLB" if "⚾" in p["label"] else
+                           "NFL")
             # Extrait away/home depuis le label ex: "🏀 Boston Celtics @ Miami Heat"
             label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
             parts = label_clean.split(" @ ")
@@ -5983,6 +6537,7 @@ def main():
     app.add_handler(CommandHandler("nba", nba_matches))
     app.add_handler(CommandHandler("nhl", nhl_matches))
     app.add_handler(CommandHandler("mlb", mlb_matches))
+    app.add_handler(CommandHandler("nfl", nfl_matches))
     # Coupe du Monde retirée — commande /mondial désactivée
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
