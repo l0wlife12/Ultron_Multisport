@@ -92,6 +92,18 @@ SPORT_CONFIG = {
         "off_key":       "avgRuns",
         "def_key":       "avgRunsAllowed",
     },
+    "NFL": {
+        "odds_key":      "americanfootball_nfl",
+        "espn_sport":    "football/nfl",
+        "ou_label":      "Total Points",
+        "emoji":         "🏈",
+        "avg_total":     44.5,
+        "std_dev":       10.0,
+        "home_boost":    1.0,
+        "b2b_penalty":   0.0,
+        "off_key":       "avgPoints",
+        "def_key":       "avgPointsAllowed",
+    },
 }
 
 # Bookmakers prioritaires pour les cotes
