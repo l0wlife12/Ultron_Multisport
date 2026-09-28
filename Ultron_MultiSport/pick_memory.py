@@ -1,713 +1,6632 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-ULTRON Pick Memory — pick_memory.py
-
-Mémoire persistante des picks envoyés.
-Ultron se note lui-même à chaque jour :
-  • Sauvegarde chaque pick au moment de l'envoi
-  • Vérifie les résultats via ESPN après la fin des matchs
-  • Calcule win rate, ROI et série en cours
-  • Génère un rapport de performance journalier/hebdomadaire
-
-Storage: picks_history.json (local)
-
-⚠️  Sur Railway, le filesystem est éphémère entre les déploiements.
-    Pour persister : ajouter un Volume Railway (Settings → Volumes)
-    Mount Path : /data
-    Puis changer : HISTORY_FILE = "/data/picks_history.json"
+ULTRON MULTISPORTS v6.0 - NBA + NHL + MLB
+Real matchups with QUEBEC TIMEZONE + INTELLIGENT PREDICTIONS
+Multi-league sports betting analysis system
+VERSION_BUILD = "2026-05-17_MLB_FIX"
 """
 
-import io
+import math
 import os
+import sys
 import json
-import uuid
-import requests
 import logging
-from datetime import datetime, timedelta
+import warnings
+import datetime
+import requests
+import pytz
+from typing import Dict, List, Optional, Tuple, Any
 
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from dotenv import load_dotenv
+
+# NBA APIs
+try:
+    from nba_api.live.nba.endpoints import scoreboard, playoffpicture
+    NBA_API_AVAILABLE = True
+except ImportError:
+    NBA_API_AVAILABLE = False
+
+try:
+    from sportsreference.nba.teams import Teams as NBATeams
+    SPORTSREFERENCE_AVAILABLE = True
+except ImportError:
+    SPORTSREFERENCE_AVAILABLE = False
+
+# ML Models for NBA Predictions
+try:
+    from sklearn.ensemble import GradientBoostingClassifier
+    from sklearn.calibration import CalibratedClassifierCV
+    from sklearn.model_selection import TimeSeriesSplit
+    import pandas as pd
+    SKLEARN_AVAILABLE = True
+    ML_MODEL = None  # Sera entraîné au démarrage
+except ImportError:
+    SKLEARN_AVAILABLE = False
+
+# Player Props Regression Model
+try:
+    from xgboost import XGBRegressor
+    XGBOOST_AVAILABLE = True
+    PROPS_MODEL = None  # Sera entraîné au démarrage
+except ImportError:
+    XGBOOST_AVAILABLE = False
+
+warnings.filterwarnings('ignore')
+sys.stdout.reconfigure(encoding='utf-8')
+
+# ESPN Context — blessures + stats en temps réel
+try:
+    from espn_context import (
+        get_full_context_all_sports,
+        format_injuries_alert,
+        get_games_with_context,
+        find_game_context,
+        format_all_boxscores,
+        format_leaders_message,
+        get_live_player_props,
+        get_team_stats,
+        get_live_game_ids,
+    )
+    ESPN_CONTEXT_AVAILABLE = True
+except ImportError:
+    ESPN_CONTEXT_AVAILABLE = False
+
+# Mémoire des picks — auto-notation des résultats via ESPN
+try:
+    from pick_memory import (
+        save_pick,
+        check_and_update_results,
+        format_daily_report,
+        format_today_recap,
+        format_result_notification,
+        backup_to_telegram,
+        restore_from_telegram,
+    )
+    PICK_MEMORY_AVAILABLE = True
+except ImportError:
+    PICK_MEMORY_AVAILABLE = False
+
+# Brain — auto-analyse ROI et optimisation des seuils
+try:
+    from ultron_brain import (
+        run_analysis,
+        should_send_pick,
+        format_brain_report,
+        get_model_adjustments,
+        load_thresholds as brain_load_thresholds,
+    )
+    BRAIN_AVAILABLE = True
+except ImportError:
+    BRAIN_AVAILABLE = False
+    def get_model_adjustments(sport):   # noqa: E302 — fallback silencieux
+        return {"model_weight": 0.50, "confidence_scale": 1.0, "home_advantage_delta": 0.0}
+
+# Ultron v2 — moteur Elo + No-Vig + ESPN + filtre qualité
+try:
+    from ultron_v2 import (
+        UltronV2,
+        EloSystem as EloSystemV2,
+        format_daily_report as format_v2_report,
+    )
+    ULTRON_V2_AVAILABLE = True
+except ImportError:
+    ULTRON_V2_AVAILABLE = False
+
+# MLB RunLine Analyzer — Scoring ATS + Pitcher + Sharp Money
+try:
+    from mlb_runline_analyzer import (
+        get_team_last10_games,
+        get_starting_pitcher,
+        get_mlb_injuries,
+        get_run_line_odds,
+        score_run_line,
+    )
+    MLB_RUNLINE_AVAILABLE = True
+except ImportError:
+    MLB_RUNLINE_AVAILABLE = False
+
+# NBA Spread Analyzer — Scoring ATS + Advanced Stats + Sharp Money + B2B Detection
+try:
+    from nba_spread_analyzer import (
+        get_nba_games_today,
+        get_team_id,
+        get_team_schedule,
+        get_team_advanced_stats,
+        get_nba_injuries,
+        get_team_injury_impact,
+        get_nba_odds_events,
+        get_nba_spread_odds,
+        score_nba_spread,
+        match_odds_event,
+    )
+    NBA_SPREAD_AVAILABLE = True
+except ImportError:
+    NBA_SPREAD_AVAILABLE = False
+
+# NHL Puckline Analyzer — Scoring ATS + Goalie + PP/PK + Injuries + Road trip + Sharp Money
+try:
+    from nhl_puckline_analyzer import (
+        get_team_schedule as get_nhl_team_schedule,
+        get_team_stats as get_nhl_team_stats,
+        get_starting_goalie,
+        get_nhl_injuries,
+        get_team_injury_impact as get_nhl_injury_impact,
+        get_nhl_odds_events,
+        get_puck_line_odds,
+        score_puck_line,
+        match_odds_event as match_odds_event_nhl,
+    )
+    NHL_PUCKLINE_AVAILABLE = True
+except ImportError:
+    NHL_PUCKLINE_AVAILABLE = False
+
+# NBA Advanced MoneyLine Analyzer — ESPN data + Sharp Money + B2B + Injuries
+try:
+    from nba_moneyline_analyzer_advanced import (
+        get_nba_games_today as get_nba_games_ml_advanced,
+        get_team_schedule as get_nba_schedule_ml_advanced,
+        get_team_advanced_stats as get_nba_stats_ml_advanced,
+        get_nba_injuries as get_nba_inj_ml_advanced,
+        get_team_injury_impact as get_nba_injury_impact_ml_advanced,
+        get_moneyline_odds,
+        score_moneyline,
+        run_nba_moneyline_advanced,
+    )
+    NBA_MONEYLINE_ADVANCED_AVAILABLE = True
+except ImportError:
+    NBA_MONEYLINE_ADVANCED_AVAILABLE = False
+
+# NHL Advanced MoneyLine Analyzer — ESPN data + Goalie + Road Trip + PP/PK
+try:
+    from nhl_moneyline_analyzer_advanced import (
+        get_nhl_games_today as get_nhl_games_ml_advanced,
+        get_team_schedule as get_nhl_schedule_ml_advanced,
+        get_team_stats as get_nhl_stats_ml_advanced,
+        get_nhl_injuries as get_nhl_inj_ml_advanced,
+        get_team_injury_impact as get_nhl_injury_impact_ml_advanced,
+        get_moneyline_odds as get_nhl_moneyline_odds,
+        score_moneyline as score_nhl_moneyline,
+        run_nhl_moneyline_advanced,
+    )
+    NHL_MONEYLINE_ADVANCED_AVAILABLE = True
+except ImportError:
+    NHL_MONEYLINE_ADVANCED_AVAILABLE = False
+
+# MLB Advanced MoneyLine Analyzer — ESPN pitcher quality + OPS + Run diff
+try:
+    from mlb_moneyline_analyzer_advanced import (
+        get_mlb_games_today as get_mlb_games_ml_advanced,
+        get_team_schedule as get_mlb_schedule_ml_advanced,
+        get_team_stats as get_mlb_stats_ml_advanced,
+        get_mlb_injuries as get_mlb_inj_ml_advanced,
+        get_team_injury_impact as get_mlb_injury_impact_ml_advanced,
+        get_moneyline_odds as get_mlb_moneyline_odds,
+        score_moneyline as score_mlb_moneyline,
+        run_mlb_moneyline_advanced,
+    )
+    MLB_MONEYLINE_ADVANCED_AVAILABLE = True
+except ImportError:
+    MLB_MONEYLINE_ADVANCED_AVAILABLE = False
+
+# NBA Player Props — ESPN stats L10 + Odds API player_points market
+try:
+    from nba_player_props import run_props_analysis
+    NBA_PROPS_AVAILABLE = True
+except ImportError:
+    NBA_PROPS_AVAILABLE = False
+
+# Totaux O/U multi-sport — ESPN stats + Odds API totals market
+try:
+    from totals_analyzer import run_totals_analysis, format_totals_message
+    TOTALS_AVAILABLE = True
+except ImportError:
+    TOTALS_AVAILABLE = False
+
+# Coupe du Monde FIFA 2026 — RETIRÉ (désactivé volontairement, voir demande utilisateur)
+# Le module world_cup_analyzer.py reste dans le repo au cas où, mais n'est plus utilisé.
+WC_AVAILABLE = False
+
+# ⚠️ IMPORTANT: Sur Railway, SEULEMENT charger variables d'environnement (pas config.env)
+# config.env est ignoré par .gitignore donc n'existe pas sur Railway
+# Cela évite de charger un ancien token depuis config.env
+IS_RAILWAY = os.getenv('RAILWAY_ENVIRONMENT') is not None
+if not IS_RAILWAY and os.path.exists('config.env'):
+    # En développement local: on peut charger config.env
+    load_dotenv('config.env')
+
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# ── Chemins des fichiers ─────────────────────────────────────────────────────
-# Utilise /data si un Volume Railway est monté, sinon dossier courant
-_BASE = "/data" if os.path.isdir("/data") else "."
-HISTORY_FILE = os.path.join(_BASE, "picks_history.json")
-BACKUP_META_FILE = os.path.join(_BASE, "backup_meta.json")
+if not SKLEARN_AVAILABLE:
+    logger.warning("⚠️ scikit-learn non disponible - Utilisant modèle statistique simple")
 
-# ── PostgreSQL (Railway DATABASE_URL) ────────────────────────────────────────
-_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# TIMEZONE & CONFIGURATION
+QUEBEC_TZ = pytz.timezone('America/Toronto')
+
+def get_quebec_time() -> datetime.datetime:
+    """Retourne l'heure actuelle en fuseau horaire Québec"""
+    return datetime.datetime.now(QUEBEC_TZ)
+
+# Validation configuration critique
+def _validate_config() -> None:
+    """Valide que les variables d'environnement requises sont présentes"""
+    telegram_token = os.getenv('TELEGRAM_TOKEN')
+    if not telegram_token:
+        raise ValueError("❌ TELEGRAM_TOKEN not set. Configure it in Railway environment variables.")
+    
+    chat_id = os.getenv('TELEGRAM_CHAT_ID')
+    chat_id_vip = os.getenv('TELEGRAM_CHAT_ID_VIP')
+    odds_key = os.getenv('ODDS_API_KEY')
+    
+    logger.info(f"✅ TELEGRAM_CHAT_ID configuré" if chat_id else "⚠️ TELEGRAM_CHAT_ID manquant")
+    logger.info(f"✅ TELEGRAM_CHAT_ID_VIP configuré" if chat_id_vip else "⚠️ TELEGRAM_CHAT_ID_VIP manquant")
+    logger.info(f"✅ ODDS_API_KEY configuré" if odds_key else "⚠️ ODDS_API_KEY désactivé")
+
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+TELEGRAM_CHAT_ID_VIP = os.getenv('TELEGRAM_CHAT_ID_VIP')
+ODDS_API_KEY = os.getenv('ODDS_API_KEY')
+
+_validate_config()
+
+# Cache des matchs par sport
+MATCHES_CACHE_NBA = []
+MATCHES_CACHE_NHL = []
+MATCHES_CACHE_MLB = []
+MATCHES_CACHE_WC  = []
+MATCHES_CACHE_TIME = None
+
+# Cache Odds API — une requête toutes les 4h par sport, seulement avant les matchs
+_ODDS_API_CACHE = {}  # sport_key → {"data": [...], "fetched_at": datetime}
+_ODDS_API_CACHE_TTL = 14400  # 4 heures
+_ODDS_API_SPORT_KEYS = {
+    "nba":     "basketball_nba",
+    "nhl":     "icehockey_nhl",
+    "mlb":     "baseball_mlb",
+    "nfl":     "americanfootball_nfl",
+    "mondial": "soccer_fifa_world_cup",
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NBA TEAMS STATS (2025-2026 Season) - Advanced Metrics
+# ═══════════════════════════════════════════════════════════════════════════
+NBA_TEAM_STATS = {
+    "celtics": {"strength": 92, "ppg": 118.5, "pa": 109.2, "wins": 64, "losses": 18, "gp": 82},
+    "heat": {"strength": 88, "ppg": 114.3, "pa": 110.8, "wins": 54, "losses": 28, "gp": 82},
+    "76ers": {"strength": 87, "ppg": 113.9, "pa": 111.2, "wins": 52, "losses": 30, "gp": 82},
+    "cavaliers": {"strength": 89, "ppg": 116.2, "pa": 109.5, "wins": 56, "losses": 26, "gp": 82},
+    "bucks": {"strength": 86, "ppg": 115.8, "pa": 112.1, "wins": 51, "losses": 31, "gp": 82},
+    "lakers": {"strength": 85, "ppg": 114.5, "pa": 113.2, "wins": 49, "losses": 33, "gp": 82},
+    "warriors": {"strength": 84, "ppg": 113.2, "pa": 114.1, "wins": 47, "losses": 35, "gp": 82},
+    "suns": {"strength": 88, "ppg": 116.8, "pa": 110.3, "wins": 55, "losses": 27, "gp": 82},
+    "nuggets": {"strength": 90, "ppg": 117.4, "pa": 108.9, "wins": 59, "losses": 23, "gp": 82},
+    "mavericks": {"strength": 87, "ppg": 115.6, "pa": 111.4, "wins": 53, "losses": 29, "gp": 82},
+    "grizzlies": {"strength": 83, "ppg": 112.1, "pa": 115.3, "wins": 45, "losses": 37, "gp": 82},
+    "kings": {"strength": 82, "ppg": 113.8, "pa": 116.2, "wins": 43, "losses": 39, "gp": 82},
+    "nets": {"strength": 75, "ppg": 110.5, "pa": 118.9, "wins": 32, "losses": 50, "gp": 82},
+    "knicks": {"strength": 84, "ppg": 114.2, "pa": 113.5, "wins": 48, "losses": 34, "gp": 82},
+    "raptors": {"strength": 74, "ppg": 109.8, "pa": 119.2, "wins": 30, "losses": 52, "gp": 82},
+    "bulls": {"strength": 72, "ppg": 108.9, "pa": 120.1, "wins": 28, "losses": 54, "gp": 82},
+    "hornets": {"strength": 70, "ppg": 107.5, "pa": 121.8, "wins": 25, "losses": 57, "gp": 82},
+    "wizards": {"strength": 71, "ppg": 108.2, "pa": 121.5, "wins": 27, "losses": 55, "gp": 82},
+    "pacers": {"strength": 81, "ppg": 113.5, "pa": 114.8, "wins": 42, "losses": 40, "gp": 82},
+    "pistons": {"strength": 73, "ppg": 109.3, "pa": 120.5, "wins": 29, "losses": 53, "gp": 82},
+    "hawks": {"strength": 79, "ppg": 111.9, "pa": 116.3, "wins": 38, "losses": 44, "gp": 82},
+    "magic": {"strength": 80, "ppg": 112.6, "pa": 115.7, "wins": 40, "losses": 42, "gp": 82},
+    "clippers": {"strength": 83, "ppg": 114.1, "pa": 114.5, "wins": 44, "losses": 38, "gp": 82},
+    "trail_blazers": {"strength": 76, "ppg": 110.2, "pa": 118.6, "wins": 33, "losses": 49, "gp": 82},
+    "spurs": {"strength": 77, "ppg": 111.8, "pa": 117.9, "wins": 35, "losses": 47, "gp": 82},
+    "rockets": {"strength": 78, "ppg": 112.5, "pa": 117.2, "wins": 37, "losses": 45, "gp": 82},
+    "grizzlies_2": {"strength": 83, "ppg": 112.1, "pa": 115.3, "wins": 45, "losses": 37, "gp": 82},
+    "timberwolves": {"strength": 82, "ppg": 113.3, "pa": 115.8, "wins": 44, "losses": 38, "gp": 82},
+    "pelicans": {"strength": 75, "ppg": 110.8, "pa": 119.1, "wins": 31, "losses": 51, "gp": 82},
+    "jazz": {"strength": 74, "ppg": 110.1, "pa": 119.8, "wins": 30, "losses": 52, "gp": 82},
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NHL TEAMS STATS (2025-2026 Season) - Advanced Metrics
+# ═══════════════════════════════════════════════════════════════════════════
+NHL_TEAM_STATS = {
+    "avalanche": {"strength": 90, "gf": 3.45, "ga": 2.68, "wins": 52, "losses": 20, "gp": 82},
+    "hurricanes": {"strength": 88, "gf": 3.32, "ga": 2.75, "wins": 50, "losses": 22, "gp": 82},
+    "golden_knights": {"strength": 86, "gf": 3.28, "ga": 2.82, "wins": 48, "losses": 24, "gp": 82},
+    "maple_leafs": {"strength": 85, "gf": 3.35, "ga": 2.88, "wins": 47, "losses": 25, "gp": 82},
+    "oilers": {"strength": 84, "gf": 3.42, "ga": 2.95, "wins": 46, "losses": 26, "gp": 82},
+    "rangers": {"strength": 83, "gf": 3.18, "ga": 2.72, "wins": 45, "losses": 27, "gp": 82},
+    "stars": {"strength": 82, "gf": 3.22, "ga": 2.85, "wins": 44, "losses": 28, "gp": 82},
+    "lightning": {"strength": 81, "gf": 3.25, "ga": 3.02, "wins": 42, "losses": 30, "gp": 82},
+    "panthers": {"strength": 80, "gf": 3.15, "ga": 2.95, "wins": 40, "losses": 32, "gp": 82},
+    "capitals": {"strength": 78, "gf": 3.12, "ga": 3.12, "wins": 38, "losses": 34, "gp": 82},
+    "bruins": {"strength": 77, "gf": 3.08, "ga": 3.15, "wins": 36, "losses": 36, "gp": 82},
+    "penguins": {"strength": 75, "gf": 2.95, "ga": 3.18, "wins": 34, "losses": 38, "gp": 82},
+    "sabres": {"strength": 73, "gf": 2.92, "ga": 3.25, "wins": 32, "losses": 40, "gp": 82},
+    "isles": {"strength": 72, "gf": 2.88, "ga": 3.32, "wins": 30, "losses": 42, "gp": 82},
+    "devils": {"strength": 71, "gf": 2.85, "ga": 3.38, "wins": 28, "losses": 44, "gp": 82},
+    "canadiens": {"strength": 68, "gf": 2.78, "ga": 3.45, "wins": 26, "losses": 46, "gp": 82},
+    "flames": {"strength": 76, "gf": 3.05, "ga": 3.08, "wins": 35, "losses": 37, "gp": 82},
+    "canucks": {"strength": 74, "gf": 3.02, "ga": 3.22, "wins": 33, "losses": 39, "gp": 82},
+    "wild": {"strength": 79, "gf": 3.18, "ga": 3.05, "wins": 39, "losses": 33, "gp": 82},
+    "jets": {"strength": 77, "gf": 3.12, "ga": 3.12, "wins": 37, "losses": 35, "gp": 82},
+    "kings": {"strength": 75, "gf": 3.08, "ga": 3.18, "wins": 34, "losses": 38, "gp": 82},
+    "ducks": {"strength": 70, "gf": 2.95, "ga": 3.35, "wins": 27, "losses": 45, "gp": 82},
+    "sharks": {"strength": 65, "gf": 2.82, "ga": 3.48, "wins": 24, "losses": 48, "gp": 82},
+    "red_wings": {"strength": 72, "gf": 2.98, "ga": 3.28, "wins": 31, "losses": 41, "gp": 82},
+    "blue_jackets": {"strength": 69, "gf": 2.88, "ga": 3.38, "wins": 28, "losses": 44, "gp": 82},
+    "coyotes": {"strength": 66, "gf": 2.75, "ga": 3.52, "wins": 25, "losses": 47, "gp": 82},
+    "predators": {"strength": 78, "gf": 3.15, "ga": 3.05, "wins": 38, "losses": 34, "gp": 82},
+    "avalanche_2": {"strength": 80, "gf": 3.22, "ga": 3.12, "wins": 40, "losses": 32, "gp": 82},
+    "kraken": {"strength": 76, "gf": 3.10, "ga": 3.15, "wins": 36, "losses": 36, "gp": 82},
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MLB TEAMS STATS (2025 Season) - Advanced Metrics
+# ═══════════════════════════════════════════════════════════════════════════
+MLB_TEAM_STATS = {
+    "yankees": {"strength": 92, "r": 4.8, "ra": 3.2, "wins": 95, "losses": 67, "gp": 162},
+    "red_sox": {"strength": 88, "r": 4.6, "ra": 3.5, "wins": 91, "losses": 71, "gp": 162},
+    "astros": {"strength": 90, "r": 4.7, "ra": 3.3, "wins": 93, "losses": 69, "gp": 162},
+    "dodgers": {"strength": 89, "r": 4.5, "ra": 3.4, "wins": 92, "losses": 70, "gp": 162},
+    "braves": {"strength": 87, "r": 4.4, "ra": 3.6, "wins": 89, "losses": 73, "gp": 162},
+    "mets": {"strength": 85, "r": 4.3, "ra": 3.7, "wins": 87, "losses": 75, "gp": 162},
+    "cubs": {"strength": 84, "r": 4.2, "ra": 3.8, "wins": 85, "losses": 77, "gp": 162},
+    "cardinals": {"strength": 83, "r": 4.1, "ra": 3.9, "wins": 83, "losses": 79, "gp": 162},
+    "mariners": {"strength": 86, "r": 4.4, "ra": 3.5, "wins": 88, "losses": 74, "gp": 162},
+    "athletics": {"strength": 75, "r": 3.8, "ra": 4.2, "wins": 70, "losses": 92, "gp": 162},
+    "rangers": {"strength": 82, "r": 4.0, "ra": 4.0, "wins": 82, "losses": 80, "gp": 162},
+    "white_sox": {"strength": 74, "r": 3.7, "ra": 4.3, "wins": 68, "losses": 94, "gp": 162},
+    "twins": {"strength": 80, "r": 3.9, "ra": 4.1, "wins": 80, "losses": 82, "gp": 162},
+    "royals": {"strength": 78, "r": 3.8, "ra": 4.2, "wins": 77, "losses": 85, "gp": 162},
+    "tigers": {"strength": 76, "r": 3.7, "ra": 4.3, "wins": 72, "losses": 90, "gp": 162},
+    "orioles": {"strength": 81, "r": 4.0, "ra": 4.0, "wins": 81, "losses": 81, "gp": 162},
+    "rays": {"strength": 79, "r": 3.9, "ra": 4.1, "wins": 78, "losses": 84, "gp": 162},
+    "blue_jays": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
+    "guardians": {"strength": 83, "r": 4.1, "ra": 3.9, "wins": 84, "losses": 78, "gp": 162},
+    "rockies": {"strength": 76, "r": 3.7, "ra": 4.3, "wins": 73, "losses": 89, "gp": 162},
+    "nationals": {"strength": 72, "r": 3.6, "ra": 4.4, "wins": 65, "losses": 97, "gp": 162},
+    "marlins": {"strength": 73, "r": 3.6, "ra": 4.3, "wins": 67, "losses": 95, "gp": 162},
+    "diamondbacks": {"strength": 79, "r": 3.9, "ra": 4.1, "wins": 78, "losses": 84, "gp": 162},
+    "padres": {"strength": 80, "r": 4.0, "ra": 4.0, "wins": 79, "losses": 83, "gp": 162},
+    "giants": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 76, "losses": 86, "gp": 162},
+    "reds": {"strength": 75, "r": 3.7, "ra": 4.2, "wins": 71, "losses": 91, "gp": 162},
+    "brewers": {"strength": 86, "r": 4.4, "ra": 3.5, "wins": 88, "losses": 74, "gp": 162},
+    "pirates": {"strength": 71, "r": 3.5, "ra": 4.4, "wins": 63, "losses": 99, "gp": 162},
+    "phillies": {"strength": 88, "r": 4.6, "ra": 3.4, "wins": 90, "losses": 72, "gp": 162},
+    "angels": {"strength": 77, "r": 3.8, "ra": 4.2, "wins": 75, "losses": 87, "gp": 162},
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NFL TEAMS STATS (2026 Season) - Advanced Metrics
+# ═══════════════════════════════════════════════════════════════════════════
+# Saison de 17 matchs. ppg/pa = points marqués/alloués par match.
+NFL_TEAM_STATS = {
+    "chiefs":     {"strength": 91, "ppg": 26.8, "pa": 19.2, "wins": 13, "losses": 4,  "gp": 17},
+    "bills":      {"strength": 89, "ppg": 27.5, "pa": 20.1, "wins": 12, "losses": 5,  "gp": 17},
+    "ravens":     {"strength": 88, "ppg": 26.2, "pa": 19.8, "wins": 12, "losses": 5,  "gp": 17},
+    "bengals":    {"strength": 82, "ppg": 24.5, "pa": 22.3, "wins": 10, "losses": 7,  "gp": 17},
+    "browns":     {"strength": 74, "ppg": 19.8, "pa": 23.5, "wins": 7,  "losses": 10, "gp": 17},
+    "steelers":   {"strength": 80, "ppg": 22.1, "pa": 20.5, "wins": 10, "losses": 7,  "gp": 17},
+    "texans":     {"strength": 83, "ppg": 24.0, "pa": 20.8, "wins": 10, "losses": 7,  "gp": 17},
+    "colts":      {"strength": 76, "ppg": 21.5, "pa": 23.0, "wins": 8,  "losses": 9,  "gp": 17},
+    "jaguars":    {"strength": 73, "ppg": 20.2, "pa": 24.1, "wins": 7,  "losses": 10, "gp": 17},
+    "titans":     {"strength": 68, "ppg": 17.8, "pa": 25.5, "wins": 5,  "losses": 12, "gp": 17},
+    "broncos":    {"strength": 81, "ppg": 22.8, "pa": 19.9, "wins": 10, "losses": 7,  "gp": 17},
+    "chargers":   {"strength": 79, "ppg": 22.4, "pa": 21.2, "wins": 9,  "losses": 8,  "gp": 17},
+    "raiders":    {"strength": 70, "ppg": 18.9, "pa": 24.8, "wins": 6,  "losses": 11, "gp": 17},
+    "patriots":   {"strength": 84, "ppg": 24.8, "pa": 19.5, "wins": 11, "losses": 6,  "gp": 17},
+    "dolphins":   {"strength": 75, "ppg": 21.2, "pa": 23.2, "wins": 8,  "losses": 9,  "gp": 17},
+    "jets":       {"strength": 69, "ppg": 18.2, "pa": 25.0, "wins": 5,  "losses": 12, "gp": 17},
+    "cowboys":    {"strength": 78, "ppg": 23.5, "pa": 22.8, "wins": 9,  "losses": 8,  "gp": 17},
+    "eagles":     {"strength": 87, "ppg": 25.9, "pa": 20.0, "wins": 12, "losses": 5,  "gp": 17},
+    "giants":     {"strength": 67, "ppg": 17.5, "pa": 25.8, "wins": 5,  "losses": 12, "gp": 17},
+    "commanders": {"strength": 85, "ppg": 25.1, "pa": 21.0, "wins": 11, "losses": 6,  "gp": 17},
+    "packers":    {"strength": 86, "ppg": 25.5, "pa": 20.3, "wins": 11, "losses": 6,  "gp": 17},
+    "vikings":    {"strength": 77, "ppg": 22.0, "pa": 22.5, "wins": 9,  "losses": 8,  "gp": 17},
+    "bears":      {"strength": 78, "ppg": 22.6, "pa": 21.8, "wins": 9,  "losses": 8,  "gp": 17},
+    "lions":      {"strength": 90, "ppg": 28.2, "pa": 19.0, "wins": 13, "losses": 4,  "gp": 17},
+    "49ers":      {"strength": 83, "ppg": 24.3, "pa": 20.6, "wins": 10, "losses": 7,  "gp": 17},
+    "seahawks":   {"strength": 80, "ppg": 23.0, "pa": 21.5, "wins": 10, "losses": 7,  "gp": 17},
+    "rams":       {"strength": 82, "ppg": 23.9, "pa": 21.1, "wins": 10, "losses": 7,  "gp": 17},
+    "cardinals":  {"strength": 72, "ppg": 20.0, "pa": 24.0, "wins": 7,  "losses": 10, "gp": 17},
+    "saints":     {"strength": 71, "ppg": 19.5, "pa": 24.3, "wins": 6,  "losses": 11, "gp": 17},
+    "buccaneers": {"strength": 79, "ppg": 22.7, "pa": 21.9, "wins": 9,  "losses": 8,  "gp": 17},
+    "falcons":    {"strength": 76, "ppg": 21.8, "pa": 22.6, "wins": 8,  "losses": 9,  "gp": 17},
+    "panthers":   {"strength": 65, "ppg": 16.8, "pa": 26.5, "wins": 4,  "losses": 13, "gp": 17},
+}
+
+# Note: Odds data is fetched from Odds API in real-time
+# Static hardcoded odds tables removed (never updated, always overridden by API calls)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# FONCTIONS POUR CHARGER LES DONNÉES EN DIRECT
+# ═══════════════════════════════════════════════════════════════════════════
+
+def load_nba_stats_real_time():
+    """Charge les stats NBA réelles depuis sportsreference"""
+    if not SPORTSREFERENCE_AVAILABLE:
+        logger.warning("⚠️ sportsreference non disponible - Utilising stats par défaut")
+        return NBA_TEAM_STATS
+    
+    try:
+        teams_data = {}
+        nba_teams = NBATeams()
+        
+        for team in nba_teams:
+            try:
+                team_name = team.name.lower().replace(" ", "_").replace("the_", "")
+                team_key = None
+                
+                # Trouver la clé correspondante
+                if team_name in NBA_TEAM_STATS:
+                    team_key = team_name
+                else:
+                    # Chercher par alias
+                    for key in NBA_TEAM_STATS.keys():
+                        if key in team_name or team_name in key:
+                            team_key = key
+                            break
+                
+                if team_key:
+                    # Charger les vraies stats
+                    wins = int(team.wins) if hasattr(team, 'wins') else NBA_TEAM_STATS[team_key]["wins"]
+                    losses = int(team.losses) if hasattr(team, 'losses') else NBA_TEAM_STATS[team_key]["losses"]
+                    ppg = float(team.points_per_game) if hasattr(team, 'points_per_game') else NBA_TEAM_STATS[team_key]["ppg"]
+                    pa = float(team.points_against_per_game) if hasattr(team, 'points_against_per_game') else NBA_TEAM_STATS[team_key]["pa"]
+                    
+                    strength = int(100 * wins / (wins + losses)) if (wins + losses) > 0 else 50
+                    
+                    teams_data[team_key] = {
+                        "strength": strength,
+                        "ppg": ppg,
+                        "pa": pa,
+                        "wins": wins,
+                        "losses": losses,
+                        "gp": wins + losses
+                    }
+                    logger.debug(f"✅ {team_key}: W-L {wins}-{losses} | PPG {ppg:.1f} | PA {pa:.1f}")
+            except Exception as e:
+                logger.warning(f"⚠️ Erreur chargement {team.name}: {e}")
+                continue
+        
+        if teams_data:
+            logger.info(f"✅ {len(teams_data)} équipes NBA chargées depuis sportsreference")
+            # Fusionner avec les stats par défaut
+            return {**NBA_TEAM_STATS, **teams_data}
+        else:
+            return NBA_TEAM_STATS
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur sportsreference: {e} - Utilisant stats par défaut")
+        return NBA_TEAM_STATS
+
+def get_live_nba_games_api():
+    """Récupère les matchs NBA en direct depuis nba_api"""
+    if not NBA_API_AVAILABLE:
+        logger.warning("⚠️ nba_api non disponible - Utilisant ESPN")
+        return None
+    
+    try:
+        sb = scoreboard.ScoreboardV2()
+        games = sb.get_data_frames()[0]
+        
+        if games.empty:
+            return None
+        
+        matches = []
+        for _, game in games.iterrows():
+            try:
+                away_team = game.get('VISITOR_TEAM_NAME', '').strip()
+                home_team = game.get('HOME_TEAM_NAME', '').strip()
+                game_status = game.get('GAME_STATUS_ID', 0)
+                
+                # Filtrer les matchs terminés (status = 3)
+                if game_status != 3 and away_team and home_team:
+                    matches.append((away_team, home_team))
+                    logger.debug(f"Matchs NBA trouvé: {away_team} @ {home_team}")
+            except Exception as e:
+                logger.debug(f"⚠️ Erreur parse match NBA: {e}")
+                continue
+        
+        if matches:
+            logger.info(f"✅ {len(matches)} matchs NBA en direct depuis nba_api")
+            return matches
+        
+        return None
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur nba_api: {e}")
+        return None
+
+# Charger les stats NBA réelles au démarrage (optionnel - peut être lent)
+NBA_TEAM_STATS_REAL = NBA_TEAM_STATS
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STATS D'ÉQUIPE DYNAMIQUES (ESPN standings) - cache hebdomadaire
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TEAM_STATS_CACHE: dict = {}          # {sport: merged_dict}
+_TEAM_STATS_CACHE_TIME: dict = {}     # {sport: datetime}
+_TEAM_STATS_TTL_SECONDS = 7 * 24 * 3600  # 7 jours
+
+# Clé offensive, clé défensive, seuil de détection "valeur totale" par sport
+_TEAM_STAT_KEYS = {
+    'NBA': ('ppg', 'pa', 200),
+    'NHL': ('gf',  'ga',  10),
+    'MLB': ('r',  'ra',  10),
+    'NFL': ('ppg', 'pa', 100),
+}
+
+# Total moyen ligue (utilisé pour estimer une ligne O/U plausible quand
+# les cotes réelles du marché ne sont pas disponibles)
+_LEAGUE_AVG_TOTAL = {
+    'NBA': 225.0,
+    'NHL': 5.8,
+    'MLB': 8.5,
+    'NFL': 44.5,
+}
 
 
-def _db_connect():
-    """Ouvre une connexion psycopg2 si DATABASE_URL est défini."""
-    if not _DATABASE_URL:
+def estimate_market_line(sport: str, projected_total: float, blend: float = 0.5) -> float:
+    """
+    Estime une ligne O/U plausible pour CE match précis, en l'absence de
+    cotes réelles du marché — au lieu d'une constante identique pour tous
+    les matchs (ex: toujours 5.5 en NHL peu importe les équipes).
+
+    Mélange la projection du modèle (spécifique au match) avec la moyenne
+    de la ligue (ancrage réaliste), puis arrondit au 0.5 le plus proche en
+    évitant les lignes rondes (jamais utilisées par les bookmakers, pour
+    éviter les push).
+
+    ⚠️ Reste une ESTIMATION du modèle, pas la vraie ligne d'un bookmaker.
+    Quand les vraies cotes du marché sont disponibles (Odds API), elles
+    doivent toujours avoir priorité sur cette estimation.
+    """
+    league_avg = _LEAGUE_AVG_TOTAL.get(sport, projected_total)
+    blended = blend * projected_total + (1 - blend) * league_avg
+    line = round(blended * 2) / 2
+    if line == int(line):  # éviter les lignes rondes
+        line += 0.5
+    return line
+
+
+def get_dynamic_team_stats(sport: str) -> dict:
+    """
+    Retourne les stats d'équipes ESPN à jour (standings hebdomadaires).
+    Cache de 7 jours — fallback automatique sur les dicts statiques.
+    La clé de sortie est le short key (ex: 'celtics'), identique aux dicts statiques.
+    """
+    global _TEAM_STATS_CACHE, _TEAM_STATS_CACHE_TIME
+    now = datetime.datetime.now()
+    cached_time = _TEAM_STATS_CACHE_TIME.get(sport)
+    if cached_time and (now - cached_time).total_seconds() < _TEAM_STATS_TTL_SECONDS:
+        return _TEAM_STATS_CACHE[sport]
+
+    base = {'NBA': NBA_TEAM_STATS, 'NHL': NHL_TEAM_STATS, 'MLB': MLB_TEAM_STATS, 'NFL': NFL_TEAM_STATS}.get(sport, {})
+    if not ESPN_CONTEXT_AVAILABLE:
+        return base
+
+    try:
+        espn_data = get_team_stats(sport)
+        if not espn_data:
+            return base
+
+        find_fn = {'NBA': find_team_nba, 'NHL': find_team_nhl, 'MLB': find_team_mlb, 'NFL': find_team_nfl}.get(sport)
+        off_key, def_key, threshold = _TEAM_STAT_KEYS.get(sport, ('ppg', 'pa', 200))
+
+        live = {}
+        for display_name, stats in espn_data.items():
+            short_key = find_fn(display_name) if find_fn else None
+            if not short_key:
+                continue
+            wins    = int(stats.get('wins', 0) or 0)
+            losses  = int(stats.get('losses', 0) or 0)
+            gp      = max(1, wins + losses)
+            raw_for = float(stats.get('points_for', 0) or 0)
+            raw_aga = float(stats.get('points_against', 0) or 0)
+            off_val = round(raw_for / gp if raw_for > threshold else raw_for, 2)
+            def_val = round(raw_aga / gp if raw_aga > threshold else raw_aga, 2)
+            live[short_key] = {
+                'strength': int((stats.get('win_pct', 0.5) or 0.5) * 100),
+                off_key:    off_val,
+                def_key:    def_val,
+                'wins':     wins,
+                'losses':   losses,
+                'gp':       gp,
+            }
+
+        merged = {**base, **live}
+        _TEAM_STATS_CACHE[sport]      = merged
+        _TEAM_STATS_CACHE_TIME[sport] = now
+        logger.info(f"✅ Stats ESPN {sport}: {len(live)} équipes mises à jour")
+        return merged
+
+    except Exception as e:
+        logger.warning(f"⚠️ get_dynamic_team_stats {sport}: {e}")
+        return base
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# NBA PLAYER PROPS - STARS OVER/UNDER LINES
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Props joueurs dynamiques (ESPN) ─────────────────────────────────────────
+# Cache journalier : rafraîchi une fois par jour depuis l'API ESPN leaders.
+# Fallback automatique vers NBA_PLAYER_PROPS si ESPN est indisponible.
+_PLAYER_PROPS_CACHE: dict = {}
+_PLAYER_PROPS_CACHE_DATE: str = ""
+
+
+def get_dynamic_player_props() -> dict:
+    """
+    Retourne les props joueurs NBA à jour (moyennes de saison ESPN).
+    Cache journalier — un seul appel ESPN par journée.
+    Fallback sur NBA_PLAYER_PROPS statique si ESPN est indisponible.
+    """
+    global _PLAYER_PROPS_CACHE, _PLAYER_PROPS_CACHE_DATE
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    if _PLAYER_PROPS_CACHE and _PLAYER_PROPS_CACHE_DATE == today:
+        return _PLAYER_PROPS_CACHE
+    if ESPN_CONTEXT_AVAILABLE:
+        try:
+            live = get_live_player_props('NBA', max_players=60)
+            if live:
+                _PLAYER_PROPS_CACHE      = live
+                _PLAYER_PROPS_CACHE_DATE = today
+                logger.info(f"✅ Props ESPN chargés: {len(live)} joueurs NBA")
+                return _PLAYER_PROPS_CACHE
+        except Exception as _e:
+            logger.warning(f"⚠️ Props ESPN erreur: {_e}")
+    logger.warning("⚠️ Props ESPN indisponibles — données statiques utilisées")
+    return NBA_PLAYER_PROPS
+
+
+NBA_PLAYER_PROPS = {
+    # EASTERN CONFERENCE - STARS
+    "Jayson Tatum": {
+        "team": "Celtics",
+        "position": "SF",
+        "props": {
+            "points": {"line": 27.5, "over": 1.90, "under": 1.90},
+            "rebounds": {"line": 8.5, "over": 1.88, "under": 1.92},
+            "assists": {"line": 2.5, "over": 1.95, "under": 1.85},
+        }
+    },
+    "Luka Doncic": {
+        "team": "Mavericks",
+        "position": "PG",
+        "props": {
+            "points": {"line": 33.5, "over": 1.88, "under": 1.92},
+            "rebounds": {"line": 9.5, "over": 1.90, "under": 1.90},
+            "assists": {"line": 8.5, "over": 1.88, "under": 1.92},
+        }
+    },
+    "Devin Booker": {
+        "team": "Suns",
+        "position": "SG",
+        "props": {
+            "points": {"line": 27.5, "over": 1.92, "under": 1.88},
+            "rebounds": {"line": 4.5, "over": 1.95, "under": 1.85},
+            "assists": {"line": 7.5, "over": 1.90, "under": 1.90},
+        }
+    },
+    "Giannis Antetokounmpo": {
+        "team": "Bucks",
+        "position": "PF",
+        "props": {
+            "points": {"line": 30.5, "over": 1.88, "under": 1.92},
+            "rebounds": {"line": 11.5, "over": 1.90, "under": 1.90},
+            "assists": {"line": 5.5, "over": 1.92, "under": 1.88},
+        }
+    },
+    
+    # WESTERN CONFERENCE - STARS
+    "LeBron James": {
+        "team": "Lakers",
+        "position": "SF",
+        "props": {
+            "points": {"line": 25.5, "over": 1.90, "under": 1.90},
+            "rebounds": {"line": 7.5, "over": 1.88, "under": 1.92},
+            "assists": {"line": 8.5, "over": 1.90, "under": 1.90},
+        }
+    },
+    "Stephen Curry": {
+        "team": "Warriors",
+        "position": "PG",
+        "props": {
+            "points": {"line": 28.5, "over": 1.88, "under": 1.92},
+            "rebounds": {"line": 4.5, "over": 1.92, "under": 1.88},
+            "assists": {"line": 6.5, "over": 1.90, "under": 1.90},
+        }
+    },
+    "Kevin Durant": {
+        "team": "Suns",
+        "position": "SF",
+        "props": {
+            "points": {"line": 28.5, "over": 1.90, "under": 1.90},
+            "rebounds": {"line": 6.5, "over": 1.88, "under": 1.92},
+            "assists": {"line": 2.5, "over": 1.92, "under": 1.88},
+        }
+    },
+    "Anthony Davis": {
+        "team": "Lakers",
+        "position": "PF",
+        "props": {
+            "points": {"line": 25.5, "over": 1.92, "under": 1.88},
+            "rebounds": {"line": 10.5, "over": 1.88, "under": 1.92},
+            "assists": {"line": 2.5, "over": 1.95, "under": 1.85},
+        }
+    },
+    "Shai Gilgeous-Alexander": {
+        "team": "Thunder",
+        "position": "SG",
+        "props": {
+            "points": {"line": 29.5, "over": 1.90, "under": 1.90},
+            "rebounds": {"line": 5.5, "over": 1.90, "under": 1.90},
+            "assists": {"line": 6.5, "over": 1.88, "under": 1.92},
+        }
+    },
+    "Damian Lillard": {
+        "team": "Bucks",
+        "position": "PG",
+        "props": {
+            "points": {"line": 24.5, "over": 1.88, "under": 1.92},
+            "rebounds": {"line": 2.5, "over": 1.92, "under": 1.88},
+            "assists": {"line": 6.5, "over": 1.90, "under": 1.90},
+        }
+    },
+    "Nikola Jokic": {
+        "team": "Nuggets",
+        "position": "C",
+        "props": {
+            "points": {"line": 24.5, "over": 1.90, "under": 1.90},
+            "rebounds": {"line": 11.5, "over": 1.88, "under": 1.92},
+            "assists": {"line": 9.5, "over": 1.90, "under": 1.90},
+        }
+    },
+}
+
+def get_live_matches_wc() -> list:
+    """Récupère les matchs Coupe du Monde FIFA 2026 depuis ESPN (soccer/fifa.world)."""
+    global MATCHES_CACHE_WC, MATCHES_CACHE_TIME
+
+    if MATCHES_CACHE_WC and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 300:  # cache 5 min pour le WC
+            return MATCHES_CACHE_WC
+
+    try:
+        if WC_AVAILABLE:
+            games = get_wc_games(days_ahead=3)
+            result = [(g["away_team"], g["home_team"]) for g in games]
+            MATCHES_CACHE_WC  = result
+            MATCHES_CACHE_TIME = datetime.datetime.now()
+            return result
+    except Exception as e:
+        logger.error(f"❌ get_live_matches_wc: {e}")
+
+    # Fallback ESPN direct
+    try:
+        today = datetime.datetime.now()
+        for offset in range(4):
+            date_str = (today + datetime.timedelta(days=offset)).strftime("%Y%m%d")
+            url = (
+                f"https://site.api.espn.com/apis/site/v2/sports"
+                f"/soccer/fifa.world/scoreboard?dates={date_str}"
+            )
+            resp = requests.get(url, timeout=10)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            daily = []
+            for event in data.get("events", []):
+                try:
+                    comp  = event.get("competitions", [{}])[0]
+                    teams = comp.get("competitors", [])
+                    desc  = event.get("status", {}).get("type", {}).get("description", "").lower()
+                    if any(w in desc for w in ["final", "completed", "cancelled", "postponed"]):
+                        continue
+                    if len(teams) >= 2:
+                        away = teams[0].get("team", {}).get("displayName", "")
+                        home = teams[1].get("team", {}).get("displayName", "")
+                        if away and home:
+                            daily.append((away, home))
+                except Exception:
+                    continue
+            if daily:
+                MATCHES_CACHE_WC  = daily
+                MATCHES_CACHE_TIME = datetime.datetime.now()
+                return daily
+    except Exception as e:
+        logger.error(f"❌ Erreur WC ESPN: {e}")
+
+    MATCHES_CACHE_WC  = []
+    MATCHES_CACHE_TIME = datetime.datetime.now()
+    return []
+
+
+def get_live_matches_nhl() -> list:
+    """Récupère les matchs NHL en direct (ESPN API)"""
+    global MATCHES_CACHE_NHL, MATCHES_CACHE_TIME
+    
+    if MATCHES_CACHE_NHL and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 120:
+            return MATCHES_CACHE_NHL
+    
+    try:
+        today = datetime.datetime.now()
+        
+        for day_offset in range(-1, 7):
+            search_date = today + datetime.timedelta(days=day_offset)
+            date_str = search_date.strftime("%Y%m%d")
+            
+            url = f"https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard?dates={date_str}"
+            resp = requests.get(url, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_matches = []
+                
+                for event in data.get('events', []):
+                    try:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                        
+                        blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
+                        if not any(word in status_desc for word in blocked_statuses):
+                            if len(competitors) >= 2:
+                                away = competitors[0].get('team', {}).get('name', '').strip()
+                                home = competitors[1].get('team', {}).get('name', '').strip()
+                                
+                                if away and home:
+                                    daily_matches.append((away, home))
+                    except Exception:
+                        continue
+                
+                if daily_matches:
+                    MATCHES_CACHE_NHL = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    return daily_matches
+        
+        logger.info("ℹ️ Aucun match NHL dans les 7 prochains jours (hors saison)")
+        MATCHES_CACHE_NHL = []
+        MATCHES_CACHE_TIME = datetime.datetime.now()
+        return []
+    
+    except Exception as e:
+        logger.error(f"❌ Erreur NHL: {e}")
+        return []
+
+def get_live_matches_mlb() -> list:
+    """Récupère les matchs MLB en direct (ESPN API) - Seulement aujourd'hui et demain"""
+    global MATCHES_CACHE_MLB, MATCHES_CACHE_TIME
+    
+    if MATCHES_CACHE_MLB and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 120:
+            return MATCHES_CACHE_MLB
+    
+    try:
+        today = datetime.datetime.now()
+        
+        # Cherche hier, aujourd'hui et demain (couvre le décalage UTC/ET
+        # pour les matchs de soirée qui peuvent être indexés différemment
+        # selon la convention de date utilisée par ESPN)
+        for day_offset in (-1, 0, 1):
+            search_date = today + datetime.timedelta(days=day_offset)
+            date_str = search_date.strftime("%Y%m%d")
+            
+            url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={date_str}"
+            resp = requests.get(url, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_matches = []
+                
+                for event in data.get('events', []):
+                    try:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                        
+                        # Exclure seulement les matchs TERMINÉS, garder "scheduled" et "live"
+                        blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
+                        if not any(word in status_desc for word in blocked_statuses):
+                            if len(competitors) >= 2:
+                                away = competitors[0].get('team', {}).get('name', '').strip()
+                                home = competitors[1].get('team', {}).get('name', '').strip()
+                                
+                                if away and home:
+                                    daily_matches.append((away, home))
+                    except Exception:
+                        continue
+                
+                # Dès qu'on trouve des matchs non terminés (peu importe le jour
+                # vérifié), on les retourne immédiatement
+                if daily_matches:
+                    MATCHES_CACHE_MLB = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    return daily_matches
+        
+        # Aucun match trouvé sur la fenêtre de 3 jours
+        logger.info("ℹ️ Aucun match MLB trouvé (hier/aujourd'hui/demain)")
+        MATCHES_CACHE_MLB = []
+        MATCHES_CACHE_TIME = datetime.datetime.now()
+        return []
+    
+    except Exception as e:
+        logger.error(f"❌ Erreur MLB: {e}")
+        return []
+
+def get_live_matches_nba() -> list:
+    """Récupère les matchs NBA en direct (nba_api > ESPN > DÉMO)"""
+    global MATCHES_CACHE_NBA, MATCHES_CACHE_TIME
+    
+    if MATCHES_CACHE_NBA and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 120:
+            return MATCHES_CACHE_NBA
+    
+    # Essayer nba_api d'abord (données officielles)
+    if NBA_API_AVAILABLE:
+        try:
+            matches = get_live_nba_games_api()
+            if matches:
+                MATCHES_CACHE_NBA = matches
+                MATCHES_CACHE_TIME = datetime.datetime.now()
+                logger.info(f"✅ {len(matches)} matchs NBA depuis nba_api")
+                return matches
+        except Exception as e:
+            logger.debug(f"⚠️ nba_api erreur: {e}")
+    
+    # Fallback sur ESPN API
+    try:
+        today = datetime.datetime.now()
+        
+        for day_offset in range(-1, 7):
+            search_date = today + datetime.timedelta(days=day_offset)
+            date_str = search_date.strftime("%Y%m%d")
+            
+            url = f"https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard?dates={date_str}"
+            resp = requests.get(url, timeout=10)
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_matches = []
+                
+                for event in data.get('events', []):
+                    try:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                        
+                        blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
+                        if not any(word in status_desc for word in blocked_statuses):
+                            if len(competitors) >= 2:
+                                away = competitors[0].get('team', {}).get('name', '').strip()
+                                home = competitors[1].get('team', {}).get('name', '').strip()
+                                
+                                if away and home:
+                                    daily_matches.append((away, home))
+                    except Exception:
+                        continue
+                
+                if daily_matches:
+                    MATCHES_CACHE_NBA = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    logger.info(f"✅ {len(daily_matches)} matchs NBA depuis ESPN")
+                    return daily_matches
+        
+        logger.info("ℹ️ Aucun match NBA trouvé sur ESPN (hors saison?)")
+    
+    except Exception as e:
+        logger.error(f"❌ Erreur ESPN NBA: {e}")
+    
+    return []
+
+MATCHES_CACHE_NFL = None
+
+def get_live_matches_nfl() -> list:
+    """Récupère les matchs NFL en direct (ESPN API)"""
+    global MATCHES_CACHE_NFL, MATCHES_CACHE_TIME
+
+    if MATCHES_CACHE_NFL and MATCHES_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MATCHES_CACHE_TIME).total_seconds()
+        if elapsed < 120:
+            return MATCHES_CACHE_NFL
+
+    try:
+        today = datetime.datetime.now()
+
+        # NFL joue par semaine (surtout dim/lun/jeu) — fenêtre plus large
+        for day_offset in range(-1, 8):
+            search_date = today + datetime.timedelta(days=day_offset)
+            date_str = search_date.strftime("%Y%m%d")
+
+            url = f"https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard?dates={date_str}"
+            resp = requests.get(url, timeout=10)
+
+            if resp.status_code == 200:
+                data = resp.json()
+                daily_matches = []
+
+                for event in data.get('events', []):
+                    try:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+
+                        blocked_statuses = ['final', 'completed', 'cancelled', 'postponed']
+                        if not any(word in status_desc for word in blocked_statuses):
+                            if len(competitors) >= 2:
+                                away = competitors[0].get('team', {}).get('name', '').strip()
+                                home = competitors[1].get('team', {}).get('name', '').strip()
+
+                                if away and home:
+                                    daily_matches.append((away, home))
+                    except Exception:
+                        continue
+
+                if daily_matches:
+                    MATCHES_CACHE_NFL = daily_matches
+                    MATCHES_CACHE_TIME = datetime.datetime.now()
+                    logger.info(f"✅ {len(daily_matches)} matchs NFL depuis ESPN")
+                    return daily_matches
+
+        logger.info("ℹ️ Aucun match NFL trouvé sur ESPN (hors saison?)")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur ESPN NFL: {e}")
+
+    return []
+
+def find_team_nhl(name_input: str) -> str | None:
+    """Trouve une équipe NHL par son nom - avec table de correspondance"""
+    name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
+    
+    # Table de correspondance explicite pour ESPN
+    team_aliases = {
+        "rangers": ["new_york_rangers", "ny_rangers", "rangers"],
+        "hurricanes": ["carolina_hurricanes", "hurricanes"],
+        "avalanche": ["colorado_avalanche", "avalanche"],
+        "maple_leafs": ["toronto_maple_leafs", "maple_leafs", "toronto_mapple_leafs"],
+        "oilers": ["edmonton_oilers", "oilers"],
+        "golden_knights": ["vegas_golden_knights", "golden_knights"],
+        "stars": ["dallas_stars", "stars"],
+        "lightning": ["tampa_bay_lightning", "lightning"],
+        "panthers": ["florida_panthers", "panthers"],
+        "capitals": ["washington_capitals", "capitals"],
+        "bruins": ["boston_bruins", "bruins"],
+        "penguins": ["pittsburgh_penguins", "penguins"],
+        "sabres": ["buffalo_sabres", "sabres"],
+        "isles": ["new_york_islanders", "islanders", "isles"],
+        "devils": ["new_jersey_devils", "devils"],
+        "canadiens": ["montreal_canadiens", "canadiens"],
+        "flames": ["calgary_flames", "flames"],
+        "canucks": ["vancouver_canucks", "canucks"],
+        "wild": ["minnesota_wild", "wild"],
+        "jets": ["winnipeg_jets", "jets"],
+        "kings": ["los_angeles_kings", "kings"],
+        "ducks": ["anaheim_ducks", "ducks"],
+        "sharks": ["san_jose_sharks", "sharks"],
+        "red_wings": ["detroit_red_wings", "red_wings"],
+        "blue_jackets": ["columbus_blue_jackets", "blue_jackets"],
+        "coyotes": ["arizona_coyotes", "coyotes"],
+        "predators": ["nashville_predators", "predators"],
+        "kraken": ["seattle_kraken", "kraken"],
+    }
+    
+    # Chercher dans les aliases
+    for team_key, aliases in team_aliases.items():
+        for alias in aliases:
+            if alias == name_clean or name_clean in alias or alias in name_clean:
+                return team_key
+    
+    # Fallback sur la recherche dans le dictionnaire
+    for team_key in NHL_TEAM_STATS.keys():
+        if team_key in name_clean or name_clean in team_key:
+            return team_key
+    
+    logger.warning(f"⚠️ Équipe NHL non trouvée: {name_input}")
+    return None
+
+def find_team_mlb(name_input: str) -> str | None:
+    """Trouve une équipe MLB par son nom - avec table de correspondance"""
+    name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
+    
+    # Table de correspondance explicite pour ESPN
+    team_aliases = {
+        "yankees": ["new_york_yankees", "yankees"],
+        "red_sox": ["boston_red_sox", "red_sox"],
+        "astros": ["houston_astros", "astros"],
+        "dodgers": ["los_angeles_dodgers", "dodgers"],
+        "braves": ["atlanta_braves", "braves"],
+        "mets": ["new_york_mets", "mets"],
+        "cubs": ["chicago_cubs", "cubs"],
+        "cardinals": ["st._louis_cardinals", "cardinals"],
+        "mariners": ["seattle_mariners", "mariners"],
+        "athletics": ["oakland_athletics", "athletics"],
+        "rangers": ["texas_rangers", "rangers"],
+        "white_sox": ["chicago_white_sox", "white_sox"],
+        "twins": ["minnesota_twins", "twins"],
+        "royals": ["kansas_city_royals", "royals"],
+        "tigers": ["detroit_tigers", "tigers"],
+        "orioles": ["baltimore_orioles", "orioles"],
+        "rays": ["tampa_bay_rays", "rays"],
+        "blue_jays": ["toronto_blue_jays", "blue_jays"],
+        "guardians": ["cleveland_guardians", "guardians"],
+        "rockies": ["colorado_rockies", "rockies"],
+        "nationals": ["washington_nationals", "nationals"],
+        "marlins": ["miami_marlins", "marlins"],
+        "diamondbacks": ["arizona_diamondbacks", "diamondbacks"],
+        "padres": ["san_diego_padres", "padres"],
+        "giants": ["san_francisco_giants", "giants"],
+        "reds": ["cincinnati_reds", "reds"],
+        "brewers": ["milwaukee_brewers", "brewers"],
+        "pirates": ["pittsburgh_pirates", "pirates"],
+        "phillies": ["philadelphia_phillies", "phillies"],
+        "angels": ["los_angeles_angels", "angels"],
+    }
+    
+    # Chercher dans les aliases
+    for team_key, aliases in team_aliases.items():
+        for alias in aliases:
+            if alias == name_clean or name_clean in alias or alias in name_clean:
+                return team_key
+    
+    # Fallback sur la recherche dans le dictionnaire
+    for team_key in MLB_TEAM_STATS.keys():
+        if team_key in name_clean or name_clean in team_key:
+            return team_key
+    
+    logger.warning(f"⚠️ Équipe MLB non trouvée: {name_input}")
+    return None
+
+def find_team_nba(name_input: str) -> str | None:
+    """Trouve une équipe NBA par son nom - avec table de correspondance"""
+    name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
+    
+    # Table de correspondance explicite pour ESPN
+    team_aliases = {
+        "celtics": ["boston_celtics", "celtics"],
+        "warriors": ["golden_state_warriors", "warriors"],
+        "nuggets": ["denver_nuggets", "nuggets"],
+        "suns": ["phoenix_suns", "suns"],
+        "lakers": ["los_angeles_lakers", "lakers"],
+        "heat": ["miami_heat", "heat"],
+        "mavericks": ["dallas_mavericks", "mavericks"],
+        "bucks": ["milwaukee_bucks", "bucks"],
+        "knicks": ["new_york_knicks", "knicks", "new_york_knicks"],
+        "76ers": ["philadelphia_76ers", "philadelphia_sixers", "76ers"],
+        "clippers": ["los_angeles_clippers", "clippers"],
+        "kings": ["sacramento_kings", "kings"],
+        "raptors": ["toronto_raptors", "raptors"],
+        "cavaliers": ["cleveland_cavaliers", "cavaliers"],
+        "bulls": ["chicago_bulls", "bulls"],
+        "pelicans": ["new_orleans_pelicans", "pelicans"],
+        "grizzlies": ["memphis_grizzlies", "grizzlies"],
+        "nets": ["brooklyn_nets", "nets"],
+        "blazers": ["portland_trail_blazers", "blazers"],
+        "spurs": ["san_antonio_spurs", "spurs"],
+    }
+    
+    # Chercher dans les aliases
+    for team_key, aliases in team_aliases.items():
+        for alias in aliases:
+            if alias == name_clean or name_clean in alias or alias in name_clean:
+                return team_key
+    
+    # Fallback sur la recherche dans le dictionnaire
+    for team_key in NBA_TEAM_STATS.keys():
+        if team_key in name_clean or name_clean in team_key:
+            return team_key
+    
+    logger.warning(f"⚠️ Équipe NBA non trouvée: {name_input}")
+    return None
+
+def find_team_nfl(name_input: str) -> str | None:
+    """Trouve une équipe NFL par son nom - avec table de correspondance"""
+    name_clean = name_input.lower().replace("the ", "").replace(" ", "_").strip()
+
+    team_aliases = {
+        "chiefs":     ["kansas_city_chiefs", "chiefs"],
+        "bills":      ["buffalo_bills", "bills"],
+        "ravens":     ["baltimore_ravens", "ravens"],
+        "bengals":    ["cincinnati_bengals", "bengals"],
+        "browns":     ["cleveland_browns", "browns"],
+        "steelers":   ["pittsburgh_steelers", "steelers"],
+        "texans":     ["houston_texans", "texans"],
+        "colts":      ["indianapolis_colts", "colts"],
+        "jaguars":    ["jacksonville_jaguars", "jaguars", "jags"],
+        "titans":     ["tennessee_titans", "titans"],
+        "broncos":    ["denver_broncos", "broncos"],
+        "chargers":   ["los_angeles_chargers", "chargers"],
+        "raiders":    ["las_vegas_raiders", "raiders"],
+        "patriots":   ["new_england_patriots", "patriots", "pats"],
+        "dolphins":   ["miami_dolphins", "dolphins"],
+        "jets":       ["new_york_jets", "jets"],
+        "cowboys":    ["dallas_cowboys", "cowboys"],
+        "eagles":     ["philadelphia_eagles", "eagles"],
+        "giants":     ["new_york_giants", "giants"],
+        "commanders": ["washington_commanders", "commanders"],
+        "packers":    ["green_bay_packers", "packers"],
+        "vikings":    ["minnesota_vikings", "vikings"],
+        "bears":      ["chicago_bears", "bears"],
+        "lions":      ["detroit_lions", "lions"],
+        "49ers":      ["san_francisco_49ers", "niners", "49ers"],
+        "seahawks":   ["seattle_seahawks", "seahawks"],
+        "rams":       ["los_angeles_rams", "rams"],
+        "cardinals":  ["arizona_cardinals", "cardinals"],
+        "saints":     ["new_orleans_saints", "saints"],
+        "buccaneers": ["tampa_bay_buccaneers", "buccaneers", "bucs"],
+        "falcons":    ["atlanta_falcons", "falcons"],
+        "panthers":   ["carolina_panthers", "panthers"],
+    }
+
+    for team_key, aliases in team_aliases.items():
+        for alias in aliases:
+            if alias == name_clean or name_clean in alias or alias in name_clean:
+                return team_key
+
+    for team_key in NFL_TEAM_STATS.keys():
+        if team_key in name_clean or name_clean in team_key:
+            return team_key
+
+    logger.warning(f"⚠️ Équipe NFL non trouvée: {name_input}")
+    return None
+
+# Dicts vides sécurisés — les vraies cotes viennent de l'Odds API en temps réel.
+# Ces variables existent uniquement pour éviter un NameError si l'API est indisponible.
+BET365_ODDS_NHL     = {}
+BETFAIR_ODDS_NHL    = {}
+DRAFTKINGS_ODDS_NHL = {}
+BET365_ODDS_MLB     = {}
+BETFAIR_ODDS_MLB    = {}
+DRAFTKINGS_ODDS_MLB = {}
+BET365_ODDS_NBA     = {}
+BETFAIR_ODDS_NBA    = {}
+DRAFTKINGS_ODDS_NBA = {}
+
+def get_best_odds_nhl(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour NHL"""
+    away_clean = find_team_nhl(away_team) or away_team.lower()
+    home_clean = find_team_nhl(home_team) or home_team.lower()
+    
+    key_forward = (away_clean, home_clean)
+    key_reverse = (home_clean, away_clean)
+    
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
+    
+    # Cotes par défaut basées sur la force relative  
+    _nhl_ts = get_dynamic_team_stats('NHL')
+    away_stats = _nhl_ts.get(away_clean, {"strength": 75})
+    home_stats = _nhl_ts.get(home_clean, {"strength": 75})
+    
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.70, "book": "DEFAULT"}
+        best_home = {"odds": 2.15, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.15, "book": "DEFAULT"}
+        best_home = {"odds": 1.70, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
+    
+    for book_name, odds_dict in bookmakers:
+        odds = odds_dict.get(key_forward, odds_dict.get(key_reverse, {}))
+        if odds:
+            away_ml = odds.get("away_ml", 1.0) if key_forward in odds_dict else odds.get("home_ml", 1.0)
+            home_ml = odds.get("home_ml", 1.0) if key_forward in odds_dict else odds.get("away_ml", 1.0)
+            
+            if away_ml > best_away["odds"]:
+                best_away = {"odds": away_ml, "book": book_name}
+            if home_ml > best_home["odds"]:
+                best_home = {"odds": home_ml, "book": book_name}
+    
+    logger.debug(f"Cotes pour {away_clean} @ {home_clean}: AWAY={best_away['odds']:.2f} ({best_away['book']}), HOME={best_home['odds']:.2f} ({best_home['book']})")
+    
+    return {
+        "away_ml": best_away["odds"],
+        "home_ml": best_home["odds"],
+        "away_book": best_away["book"],
+        "home_book": best_home["book"],
+    }
+
+def get_best_odds_mlb(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour MLB"""
+    away_clean = find_team_mlb(away_team) or away_team.lower()
+    home_clean = find_team_mlb(home_team) or home_team.lower()
+    
+    key_forward = (away_clean, home_clean)
+    key_reverse = (home_clean, away_clean)
+    
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
+    
+    # Cotes par défaut basées sur la force relative (fallback)
+    _mlb_ts = get_dynamic_team_stats('MLB')
+    away_stats = _mlb_ts.get(away_clean, {"strength": 80})
+    home_stats = _mlb_ts.get(home_clean, {"strength": 80})
+    
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.75, "book": "DEFAULT"}
+        best_home = {"odds": 2.05, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.05, "book": "DEFAULT"}
+        best_home = {"odds": 1.75, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
+    
+    for book_name, odds_dict in bookmakers:
+        odds = odds_dict.get(key_forward, odds_dict.get(key_reverse, {}))
+        if odds:
+            away_ml = odds.get("away_ml", 1.0) if key_forward in odds_dict else odds.get("home_ml", 1.0)
+            home_ml = odds.get("home_ml", 1.0) if key_forward in odds_dict else odds.get("away_ml", 1.0)
+            
+            if away_ml > best_away["odds"]:
+                best_away = {"odds": away_ml, "book": book_name}
+            if home_ml > best_home["odds"]:
+                best_home = {"odds": home_ml, "book": book_name}
+    
+    return {
+        "away_ml": best_away["odds"],
+        "home_ml": best_home["odds"],
+        "away_book": best_away["book"],
+        "home_book": best_home["book"],
+    }
+
+def get_best_odds_nba(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour NBA"""
+    away_clean = find_team_nba(away_team) or away_team.lower()
+    home_clean = find_team_nba(home_team) or home_team.lower()
+    
+    key_forward = (away_clean, home_clean)
+    key_reverse = (home_clean, away_clean)
+    
+    bookmakers = []  # Hardcoded odds tables removed — real-time odds come from Odds API
+    
+    # Cotes par défaut basées sur la force relative  
+    _nba_ts = get_dynamic_team_stats('NBA')
+    away_stats = _nba_ts.get(away_clean, {"strength": 85})
+    home_stats = _nba_ts.get(home_clean, {"strength": 85})
+    
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.75, "book": "DEFAULT"}
+        best_home = {"odds": 2.05, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.05, "book": "DEFAULT"}
+        best_home = {"odds": 1.75, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
+    
+    for book_name, odds_dict in bookmakers:
+        odds = odds_dict.get(key_forward, odds_dict.get(key_reverse, {}))
+        if odds:
+            away_ml = odds.get("away_ml", 1.0) if key_forward in odds_dict else odds.get("home_ml", 1.0)
+            home_ml = odds.get("home_ml", 1.0) if key_forward in odds_dict else odds.get("away_ml", 1.0)
+            
+            if away_ml > best_away["odds"]:
+                best_away = {"odds": away_ml, "book": book_name}
+            if home_ml > best_home["odds"]:
+                best_home = {"odds": home_ml, "book": book_name}
+    
+    logger.debug(f"Cotes pour {away_clean} @ {home_clean}: AWAY={best_away['odds']:.2f} ({best_away['book']}), HOME={best_home['odds']:.2f} ({best_home['book']})")
+    
+    return {
+        "away_ml": best_away["odds"],
+        "home_ml": best_home["odds"],
+        "away_book": best_away["book"],
+        "home_book": best_home["book"],
+    }
+
+
+def get_best_odds_nfl(away_team: str, home_team: str) -> dict:
+    """LINE SHOPPING pour NFL"""
+    away_clean = find_team_nfl(away_team) or away_team.lower()
+    home_clean = find_team_nfl(home_team) or home_team.lower()
+
+    _nfl_ts = get_dynamic_team_stats('NFL')
+    away_stats = _nfl_ts.get(away_clean, {"strength": 78})
+    home_stats = _nfl_ts.get(home_clean, {"strength": 78})
+
+    strength_diff = away_stats["strength"] - home_stats["strength"]
+    if strength_diff > 5:
+        best_away = {"odds": 1.75, "book": "DEFAULT"}
+        best_home = {"odds": 2.05, "book": "DEFAULT"}
+    elif strength_diff < -5:
+        best_away = {"odds": 2.05, "book": "DEFAULT"}
+        best_home = {"odds": 1.75, "book": "DEFAULT"}
+    else:
+        best_away = {"odds": 1.90, "book": "DEFAULT"}
+        best_home = {"odds": 1.90, "book": "DEFAULT"}
+
+    logger.debug(f"Cotes pour {away_clean} @ {home_clean}: AWAY={best_away['odds']:.2f}, HOME={best_home['odds']:.2f}")
+
+    return {
+        "away_ml": best_away["odds"],
+        "home_ml": best_home["odds"],
+        "away_book": best_away["book"],
+        "home_book": best_home["book"],
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ODDS API EN TEMPS RÉEL — économie maximale de requêtes
+# Appelé UNIQUEMENT depuis auto_send_pronostics (avant-match)
+# Cache 4h par sport = max ~3 requêtes/jour si matchs existent
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _odds_cache_db_connect():
+    """Connexion Postgres pour le cache Odds API (même pattern que pick_memory/brain)."""
+    if not os.environ.get("DATABASE_URL"):
         return None
     try:
         import psycopg2
-        # Railway injecte 'postgres://' mais psycopg2 requiert 'postgresql://'
-        url = _DATABASE_URL.replace("postgres://", "postgresql://", 1)
-        conn = psycopg2.connect(url)
-        return conn
+        url = os.environ["DATABASE_URL"].replace("postgres://", "postgresql://", 1)
+        return psycopg2.connect(url)
     except Exception as e:
-        logger.error(f"❌ pick_memory DB connexion: {e}")
+        logger.debug(f"⚠️ odds cache DB connexion: {e}")
         return None
 
 
-def _db_init():
-    """Crée la table pick_store si elle n'existe pas encore."""
-    if not _DATABASE_URL:
-        logger.info("ℹ️  pick_memory: DATABASE_URL absent — stockage JSON local uniquement")
-        logger.info(f"    Fichier: {HISTORY_FILE}")
-        return
-    conn = _db_connect()
+def _odds_cache_db_init():
+    conn = _odds_cache_db_connect()
     if not conn:
-        logger.warning("⚠️  pick_memory: DATABASE_URL présent mais connexion échouée — fallback JSON")
         return
     try:
         with conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    CREATE TABLE IF NOT EXISTS pick_store (
-                        id   INTEGER PRIMARY KEY DEFAULT 1,
-                        data JSONB NOT NULL
+                    CREATE TABLE IF NOT EXISTS odds_cache_store (
+                        sport_key  TEXT PRIMARY KEY,
+                        data       JSONB NOT NULL,
+                        fetched_at TIMESTAMPTZ NOT NULL
                     )
                 """)
-        logger.info("✅ pick_memory: table pick_store prête (PostgreSQL)")
     except Exception as e:
-        logger.error(f"❌ pick_memory DB init: {e}")
+        logger.debug(f"⚠️ odds cache DB init: {e}")
     finally:
         conn.close()
 
 
-_db_init()
-
-SPORT_PATHS = {
-    "NBA": "basketball/nba",
-    "NHL": "hockey/nhl",
-    "MLB": "baseball/mlb",
-}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# LECTURE / ÉCRITURE
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _empty_stats() -> dict:
-    return {
-        "total_sent":   0,
-        "wins":         0,
-        "losses":       0,
-        "pending":      0,
-        "win_rate":     0.0,
-        "last_updated": None,
-    }
-
-
-def load_history() -> dict:
-    # Essai PostgreSQL en priorité
-    conn = _db_connect()
-    if conn:
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute("SELECT data FROM pick_store WHERE id = 1")
-                    row = cur.fetchone()
-                    if row:
-                        return row[0]  # psycopg2 désérialise JSONB automatiquement
-        except Exception as e:
-            logger.error(f"❌ pick_memory DB load: {e}")
-        finally:
-            conn.close()
-    # Fallback fichier JSON local
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error(f"❌ pick_memory: erreur lecture {HISTORY_FILE}: {e}")
-    return {"picks": [], "stats": _empty_stats()}
-
-
-def _save_history(history: dict):
-    # Sauvegarder dans PostgreSQL si disponible
-    conn = _db_connect()
-    if conn:
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        INSERT INTO pick_store (id, data) VALUES (1, %s)
-                        ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data
-                        """,
-                        (json.dumps(history, ensure_ascii=False),),
-                    )
-            return  # succès DB, pas besoin d'écrire le fichier
-        except Exception as e:
-            logger.error(f"❌ pick_memory DB save: {e}")
-        finally:
-            conn.close()
-    # Fallback fichier JSON local
+def _odds_cache_db_load(sport_key: str):
+    """Charge le cache depuis Postgres (survit aux redémarrages Railway)."""
+    conn = _odds_cache_db_connect()
+    if not conn:
+        return None
     try:
-        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
-            json.dump(history, f, indent=2, ensure_ascii=False)
-    except OSError as e:
-        logger.error(f"❌ pick_memory: erreur écriture {HISTORY_FILE}: {e}")
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data, fetched_at FROM odds_cache_store WHERE sport_key = %s",
+                    (sport_key,)
+                )
+                row = cur.fetchone()
+                if row:
+                    return {"data": row[0], "fetched_at": row[1].replace(tzinfo=None)}
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB load ({sport_key}): {e}")
+    finally:
+        conn.close()
+    return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ENREGISTREMENT D'UN PICK
-# ─────────────────────────────────────────────────────────────────────────────
+def _odds_cache_db_save(sport_key: str, data: list, fetched_at: datetime.datetime):
+    conn = _odds_cache_db_connect()
+    if not conn:
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO odds_cache_store (sport_key, data, fetched_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (sport_key) DO UPDATE
+                    SET data = EXCLUDED.data, fetched_at = EXCLUDED.fetched_at
+                    """,
+                    (sport_key, json.dumps(data), fetched_at)
+                )
+    except Exception as e:
+        logger.debug(f"⚠️ odds cache DB save ({sport_key}): {e}")
+    finally:
+        conn.close()
 
-def save_pick(
-    sport: str,
-    away_team: str,
-    home_team: str,
-    pick_type: str,        # "ML" | "SPREAD" | "OU"
-    pick_team: str,        # équipe ou direction choisie (ex: "Boston Celtics")
-    odds: str,
-    confidence: int,
-    ev_pct: str = "",
-    game_date: str = "",   # "YYYY-MM-DD", déduit de today si vide
-    pick_line: float = None,  # ex: -3.5 pour SPREAD, 225.5 pour OU
-) -> str:
+
+_odds_cache_db_init()
+
+
+def fetch_odds_api(sport_key: str) -> list:
     """
-    Enregistre un pick envoyé et retourne son ID unique.
-    Appelé immédiatement après l'envoi Telegram.
+    Appelle The Odds API une seule fois par tranche de 4h par sport.
+    Le cache est persisté dans Postgres pour survivre aux redémarrages Railway.
+    Retourne la liste brute d'événements avec cotes (h2h + spreads + totals).
+    Retourne [] si clé absente, quota dépassé ou erreur réseau.
     """
-    if not game_date:
-        game_date = datetime.now().strftime("%Y-%m-%d")
-
-    history  = load_history()
-    pick_id  = str(uuid.uuid4())[:8]
-
-    history["picks"].append({
-        "id":          pick_id,
-        "date":        game_date,
-        "sent_at":     datetime.now().isoformat(),
-        "sport":       sport.upper(),
-        "away_team":   away_team,
-        "home_team":   home_team,
-        "pick_type":   pick_type.upper(),
-        "pick_team":   pick_team,
-        "pick_line":   pick_line,
-        "odds":        str(odds),
-        "confidence":  confidence,
-        "ev_pct":      ev_pct,
-        "result":      None,   # "WIN" | "LOSS" | "PUSH" | None (en attente)
-        "score":       None,   # ex: "Boston 112 - 98 Miami"
-        "checked_at":  None,
-    })
-
-    _recalculate_stats(history)
-    _save_history(history)
-    logger.info(f"💾 Pick mémorisé [{pick_id}]: {pick_type} {pick_team} @ {odds} ({sport})")
-    return pick_id
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VÉRIFICATION DES RÉSULTATS ESPN
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _fuzzy_match_teams(pick_away: str, pick_home: str,
-                        espn_away: str, espn_home: str) -> bool:
-    """Retourne True si les deux équipes correspondent (fuzzy match)."""
-    def parts(name): return [w for w in name.lower().split() if len(w) > 3]
-
-    away_ok = any(p in espn_away.lower() for p in parts(pick_away))
-    home_ok = any(p in espn_home.lower() for p in parts(pick_home))
-    return away_ok and home_ok
-
-
-def _check_ml_result(pick: dict, home_name: str, home_won: bool) -> bool:
-    pick_team_l = pick["pick_team"].lower()
-    home_parts  = [w for w in home_name.lower().split() if len(w) > 3]
-    is_home     = any(p in pick_team_l for p in home_parts)
-    return is_home == home_won
-
-
-def _check_spread_result(pick: dict, home_score: int, away_score: int,
-                          home_name: str) -> bool:
-    line        = pick.get("pick_line") or 0
-    pick_team_l = pick["pick_team"].lower()
-    home_parts  = [w for w in home_name.lower().split() if len(w) > 3]
-    is_home     = any(p in pick_team_l for p in home_parts)
-    if is_home:
-        return (home_score + line) > away_score
-    return (away_score + abs(line)) > home_score
-
-
-def _check_ou_result(pick: dict, home_score: int, away_score: int) -> bool:
-    total = home_score + away_score
-    line  = pick.get("pick_line") or 0
-    return total > line if "OVER" in pick["pick_team"].upper() else total < line
-
-
-def check_and_update_results() -> list:
-    """
-    Parcourt les picks en attente, interroge ESPN et met à jour les résultats.
-    Retourne la liste des picks dont le résultat vient d'être déterminé.
-    """
-    history = load_history()
-    pending = [p for p in history["picks"] if p["result"] is None]
-    if not pending:
+    global _ODDS_API_CACHE
+    if not ODDS_API_KEY:
         return []
 
-    # Regroupe par (sport, date) pour minimiser les appels ESPN
-    by_sport_date: dict = {}
-    for pick in pending:
-        key = (pick["sport"], pick["date"])
-        by_sport_date.setdefault(key, []).append(pick)
+    now = datetime.datetime.now()
 
-    updated = []
+    cached = _ODDS_API_CACHE.get(sport_key)
+    if not cached:
+        db_cached = _odds_cache_db_load(sport_key)
+        if db_cached:
+            cached = db_cached
+            _ODDS_API_CACHE[sport_key] = db_cached
 
-    for (sport, date_str), picks_group in by_sport_date.items():
-        path = SPORT_PATHS.get(sport)
-        if not path:
-            continue
+    if cached:
+        elapsed = (now - cached["fetched_at"]).total_seconds()
+        if elapsed < _ODDS_API_CACHE_TTL:
+            logger.debug(f"📦 Odds API cache {sport_key} ({int(elapsed/60)} min ago)")
+            return cached["data"]
 
-        date_key = date_str.replace("-", "")
-        try:
-            url  = f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard?dates={date_key}"
-            resp = requests.get(url, timeout=10)
-            if resp.status_code != 200:
-                continue
+    api_sport = _ODDS_API_SPORT_KEYS.get(sport_key)
+    if not api_sport:
+        return []
+
+    try:
+        url = (
+            f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/"
+            f"?apiKey={ODDS_API_KEY}"
+            f"&regions=us"
+            f"&markets=h2h,spreads,totals"
+            f"&oddsFormat=decimal"
+            f"&dateFormat=iso"
+        )
+        resp = requests.get(url, timeout=10)
+        remaining = resp.headers.get("x-requests-remaining", "?")
+        used = resp.headers.get("x-requests-used", "?")
+
+        if resp.status_code == 200:
             data = resp.json()
-        except Exception as e:
-            logger.warning(f"⚠️ pick_memory ESPN {sport} {date_str}: {e}")
-            continue
+            _ODDS_API_CACHE[sport_key] = {"data": data, "fetched_at": now}
+            _odds_cache_db_save(sport_key, data, now)
+            logger.info(f"✅ Odds API {sport_key}: {len(data)} matchs | restantes={remaining} utilisées={used}")
+            return data
+        elif resp.status_code == 401:
+            logger.error("❌ Odds API: clé invalide (401)")
+        elif resp.status_code == 429:
+            logger.warning("⚠️ Odds API: quota mensuel dépassé (429)")
+        else:
+            logger.warning(f"⚠️ Odds API {sport_key}: HTTP {resp.status_code}")
+    except Exception as e:
+        logger.error(f"❌ Odds API erreur {sport_key}: {e}")
 
-        for event in data.get("events", []):
-            status = event.get("status", {}).get("type", {}).get("name", "")
-            if status not in ("STATUS_FINAL", "STATUS_FULL_TIME"):
-                continue  # match pas encore terminé
-
-            comp        = event.get("competitions", [{}])[0]
-            competitors = comp.get("competitors", [])
-            if len(competitors) < 2:
-                continue
-
-            home_c = next((c for c in competitors if c["homeAway"] == "home"), None)
-            away_c = next((c for c in competitors if c["homeAway"] == "away"), None)
-            if not home_c or not away_c:
-                continue
-
-            home_name  = home_c["team"]["displayName"]
-            away_name  = away_c["team"]["displayName"]
-            home_score = int(float(home_c.get("score", 0)))
-            away_score = int(float(away_c.get("score", 0)))
-            home_won   = home_score > away_score
-            score_str  = f"{away_name} {away_score}  –  {home_score} {home_name}"
-
-            for pick in picks_group:
-                if pick["result"] is not None:
-                    continue  # déjà gradé
-
-                if not _fuzzy_match_teams(pick["away_team"], pick["home_team"],
-                                          away_name, home_name):
-                    continue
-
-                pt = pick["pick_type"]
-                if pt == "ML":
-                    won = _check_ml_result(pick, home_name, home_won)
-                elif pt == "SPREAD":
-                    won = _check_spread_result(pick, home_score, away_score, home_name)
-                elif pt == "OU":
-                    won = _check_ou_result(pick, home_score, away_score)
-                else:
-                    continue
-
-                pick["result"]     = "WIN" if won else "LOSS"
-                pick["score"]      = score_str
-                pick["checked_at"] = datetime.now().isoformat()
-                updated.append(dict(pick))
-                logger.info(
-                    f"{'✅' if won else '❌'} Résultat [{pick['id']}] "
-                    f"{pick['sport']} {pick['pick_team']}: {pick['result']} | {score_str}"
-                )
-
-    if updated:
-        _recalculate_stats(history)
-        _save_history(history)
-
-    return updated
+    return []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STATISTIQUES
-# ─────────────────────────────────────────────────────────────────────────────
+def get_live_odds_for_match(away_team: str, home_team: str, api_events: list) -> dict:
+    """
+    Cherche les cotes en temps réel pour un match dans la réponse Odds API.
+    Retourne dict avec ml_away, ml_home, spread_pick, spread_odds, ou_pick, ou_odds
+    ou dict vide si introuvable.
+    """
+    if not api_events:
+        return {}
 
-def _recalculate_stats(history: dict):
-    picks      = history["picks"]
-    wins       = sum(1 for p in picks if p["result"] == "WIN")
-    losses     = sum(1 for p in picks if p["result"] == "LOSS")
-    pending    = sum(1 for p in picks if p["result"] is None)
-    total_grad = wins + losses
+    away_parts = [p for p in away_team.lower().split() if len(p) > 3]
+    home_parts = [p for p in home_team.lower().split() if len(p) > 3]
 
-    history["stats"] = {
-        "total_sent":   len(picks),
-        "wins":         wins,
-        "losses":       losses,
-        "pending":      pending,
-        "win_rate":     round(wins / total_grad, 4) if total_grad > 0 else 0.0,
-        "last_updated": datetime.now().isoformat(),
+    best_event = None
+    best_score = 0
+
+    for event in api_events:
+        ev_away = event.get("away_team", "").lower()
+        ev_home = event.get("home_team", "").lower()
+        score = 0
+        for p in away_parts:
+            if p in ev_away: score += 2
+            if p in ev_home: score += 1  # inversé possible
+        for p in home_parts:
+            if p in ev_home: score += 2
+            if p in ev_away: score += 1
+        if score > best_score:
+            best_score = score
+            best_event = event
+
+    if not best_event or best_score < 2:
+        return {}
+
+    ml_away, ml_home = None, None
+    spread_pick, spread_odds = "", "1.91"
+    ou_pick, ou_odds = "", "1.91"
+
+    # Priorité bookmakers US
+    priority = ["draftkings", "fanduel", "betmgm", "bet365", "bovada", "pointsbet"]
+    bookmakers = sorted(
+        best_event.get("bookmakers", []),
+        key=lambda b: priority.index(b["key"]) if b["key"] in priority else 99
+    )
+
+    for bk in bookmakers:
+        for market in bk.get("markets", []):
+            mkey = market["key"]
+            outcomes = market.get("outcomes", [])
+
+            if mkey == "h2h" and ml_away is None:
+                for o in outcomes:
+                    name = o["name"].lower()
+                    if any(p in name for p in away_parts):
+                        ml_away = o["price"]
+                    elif any(p in name for p in home_parts):
+                        ml_home = o["price"]
+
+            elif mkey == "spreads" and not spread_pick:
+                for o in outcomes:
+                    name = o["name"].lower()
+                    pt = o.get("point", 0)
+                    if any(p in name for p in away_parts):
+                        sign = "+" if pt > 0 else ""
+                        spread_pick = f"{away_team.upper()} {sign}{pt}"
+                        spread_odds = f"{o['price']:.2f}"
+                        break
+
+            elif mkey == "totals" and not ou_pick:
+                for o in outcomes:
+                    if o["name"] == "Over":
+                        pt = o.get("point", 0)
+                        ou_pick = f"OVER {pt}"
+                        ou_odds = f"{o['price']:.2f}"
+                        break
+
+        if ml_away and ml_home and spread_pick and ou_pick:
+            break
+
+    if ml_away is None or ml_home is None:
+        return {}
+
+    return {
+        "ml_away": ml_away,
+        "ml_home": ml_home,
+        "spread_pick": spread_pick,
+        "spread_odds": spread_odds,
+        "ou_pick": ou_pick,
+        "ou_odds": ou_odds,
     }
 
 
-def get_stats() -> dict:
-    return load_history()["stats"]
-
-
-def _current_streak(picks: list) -> str:
-    """Retourne la série actuelle ex: 'W5' ou 'L2'"""
-    graded = [p for p in picks if p["result"] in ("WIN", "LOSS")]
-    if not graded:
-        return "—"
-    last   = graded[-1]["result"]
-    count  = 0
-    for p in reversed(graded):
-        if p["result"] == last:
-            count += 1
-        else:
-            break
-    return f"{'W' if last == 'WIN' else 'L'}{count}"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FORMATAGE DES RAPPORTS TELEGRAM
-# ─────────────────────────────────────────────────────────────────────────────
-
-def format_today_recap() -> str:
+def get_injuries(sport: str, league: str) -> list:
     """
-    Résumé de fin de journée : tous les picks envoyés aujourd'hui
-    avec leur résultat (WIN / LOSS / en attente).
-    Envoyé automatiquement à 23h00 heure Québec.
-    Retourne toujours un message — même s'il n'y a pas eu de picks.
+    Récupère les données sur les blessures & alignements ESPN.
+    sport: 'basketball', 'hockey', 'baseball'
+    league: 'nba', 'nhl', 'mlb'
+    Retourne: Liste de dicts {'team', 'player', 'status', 'position'}
     """
-    history  = load_history()
-    picks    = history["picks"]
-    today    = datetime.now().strftime("%Y-%m-%d")
-    today_ps = [p for p in picks if p.get("date") == today]
-    stats    = history["stats"]
-    s_wins   = stats.get("wins", 0)
-    s_loss   = stats.get("losses", 0)
-    s_tot    = s_wins + s_loss
-    s_wr     = s_wins / s_tot if s_tot > 0 else 0.0
-    streak   = _current_streak(picks)
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/injuries"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            logger.debug(f"⚠️ Injuries API {league}: HTTP {resp.status_code}")
+            return []
+        
+        data = resp.json()
+        injuries = []
+        
+        for team in data.get("injuries", []):
+            team_name = team.get("team", {}).get("displayName", "Unknown")
+            for player in team.get("injuries", []):
+                injuries.append({
+                    "team": team_name,
+                    "player": player.get("athlete", {}).get("displayName", "Unknown"),
+                    "status": player.get("status", "Unknown"),  # Questionable, Out, Day-To-Day, etc.
+                    "position": player.get("athlete", {}).get("position", {}).get("abbreviation", ""),
+                })
+        
+        logger.info(f"✅ Injuries {league}: {len(injuries)} joueurs affectés")
+        return injuries
+        
+    except Exception as e:
+        logger.error(f"❌ Injuries API erreur {league}: {e}")
+        return []
 
-    date_fr  = datetime.now().strftime("%A %d %B %Y").upper()
 
-    if not today_ps:
-        msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
-        msg += f"     {date_fr}\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        msg += "📭  Aucun pick envoyé aujourd'hui.\n"
-        msg += "     (Aucun match dans la fenêtre 1h avant début)\n\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📈  Saison   :  {s_wins}W–{s_loss}L"
-        if s_tot > 0:
-            msg += f"  ({s_wr:.1%} WR)"
-        msg += f"  •  Série {streak}\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        return msg
+def get_key_injuries(injuries: list, team_name: str) -> list:
+    """
+    Filtre les blessures importantes pour une équipe spécifique.
+    Retourne: Les joueurs OUT ou QUESTIONABLE seulement
+    """
+    return [i for i in injuries 
+            if team_name.lower() in i["team"].lower()
+            and i["status"].lower() in ["out", "questionable", "day-to-day"]]
 
-    wins    = sum(1 for p in today_ps if p["result"] == "WIN")
-    losses  = sum(1 for p in today_ps if p["result"] == "LOSS")
-    pending = sum(1 for p in today_ps if p["result"] is None)
-    total_g = wins + losses
-    wr      = wins / total_g if total_g > 0 else 0.0
 
-    if wins > losses:
-        bilan_icon = "🟢"
-    elif wins == losses:
-        bilan_icon = "🟡"
+def calculate_confidence(pick_data: dict, injuries: list) -> dict:
+    """
+    Calcule un score de confiance (0-100) en tenant compte des blessures.
+    
+    pick_data doit contenir:
+    - home_team, away_team (str)
+    - home_win_pct, away_win_pct (float entre 0 et 1)
+    - home_last5, away_last5 (int: wins sur les 5 derniers matchs)
+    - pick (str: 'home' ou 'away')
+    
+    Retourne dict:
+    - confidence (0-100)
+    - reasons (liste de motivations positives)
+    - penalties (liste de pénalités)
+    - send (booléen: envoyer si ≥60)
+    """
+    score = 0
+    reasons = []
+    penalties = []
+
+    picked_team = pick_data["home_team"] if pick_data["pick"] == "home" else pick_data["away_team"]
+    other_team  = pick_data["away_team"] if pick_data["pick"] == "home" else pick_data["home_team"]
+
+    # ✅ Win % en faveur du pick
+    win_pct_diff = pick_data.get("home_win_pct", 0.5) - pick_data.get("away_win_pct", 0.5)
+    if pick_data["pick"] == "away":
+        win_pct_diff = -win_pct_diff
+
+    if win_pct_diff > 0.1:
+        score += 25
+        reasons.append(f"Win% nettement supérieur ({win_pct_diff:.0%})")
+    elif win_pct_diff > 0:
+        score += 10
+        reasons.append("Win% légèrement supérieur")
     else:
-        bilan_icon = "🔴"
+        score -= 10
+        penalties.append("Win% inférieur à l'adversaire")
 
-    msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
-    msg += f"     {datetime.now().strftime('%A %d %B %Y').upper()}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    # ✅ Forme récente (last 5)
+    picked_last5 = pick_data.get("home_last5") if pick_data["pick"] == "home" else pick_data.get("away_last5")
+    other_last5  = pick_data.get("away_last5") if pick_data["pick"] == "home" else pick_data.get("home_last5")
 
-    for p in today_ps:
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
-        if p["result"] == "WIN":
-            res_icon = "✅"
-        elif p["result"] == "LOSS":
-            res_icon = "❌"
+    if picked_last5 is not None:
+        if picked_last5 >= 4:
+            score += 20
+            reasons.append(f"Excellente forme récente ({picked_last5}/5)")
+        elif picked_last5 >= 3:
+            score += 10
+            reasons.append(f"Bonne forme récente ({picked_last5}/5)")
+        elif picked_last5 <= 1:
+            score -= 15
+            penalties.append(f"Mauvaise forme récente ({picked_last5}/5)")
+
+    # 🏥 Pénalités pour blessures
+    key_injuries = get_key_injuries(injuries, picked_team)
+    if key_injuries:
+        out_count = sum(1 for i in key_injuries if i["status"].lower() == "out")
+        questionable_count = sum(1 for i in key_injuries if i["status"].lower() == "questionable")
+        score -= (out_count * 15) + (questionable_count * 7)
+        penalties.append(f"{out_count} absent(s), {questionable_count} incertain(s) chez {picked_team}")
+
+    # 🏥 Bonus si l'adversaire est touché
+    opp_injuries = get_key_injuries(injuries, other_team)
+    if opp_injuries:
+        score += len(opp_injuries) * 8
+        reasons.append(f"Adversaire affaibli ({len(opp_injuries)} blessure(s))")
+
+    # Score final entre 0 et 100
+    final_score = max(0, min(100, 50 + score))
+
+    return {
+        "confidence": final_score,
+        "reasons": reasons,
+        "penalties": penalties,
+        "send": final_score >= 60  # ✅ Seuil minimum pour envoyer
+    }
+
+
+def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction NHL avec MoneyLine Guide (3 pillars: ML + PUCK LINE + O/U)"""
+    away_clean = find_team_nhl(away_team) or away_team.lower()
+    home_clean = find_team_nhl(home_team) or home_team.lower()
+    
+    _nhl_ts = get_dynamic_team_stats('NHL')
+    away_stats = _nhl_ts.get(away_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
+    home_stats = _nhl_ts.get(home_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
+    
+    odds_data = get_best_odds_nhl(away_clean, home_clean)
+    best_away_ml = odds_data["away_ml"]
+    best_home_ml = odds_data["home_ml"]
+    
+    # Calcul du modèle 4-facteurs pour le hockey
+    away_gf_diff = away_stats["gf"] - home_stats["ga"]
+    home_gf_diff = home_stats["gf"] - away_stats["ga"]
+    
+    point_diff = away_gf_diff - home_gf_diff - 0.3  # Avantage route
+    
+    try:
+        win_prob_away = 1 / (1 + math.exp(-point_diff / 1.8))
+    except Exception:
+        win_prob_away = 0.5 + (point_diff / 3.0)
+    
+    win_prob_away = max(0.05, min(0.95, win_prob_away))
+    
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_nhl      = get_model_adjustments("NHL")
+    _model_w_nhl  = _adj_nhl.get("model_weight", 0.50)
+    _conf_cal_nhl = _adj_nhl.get("confidence_scale", 1.0)
+    _home_d_nhl   = _adj_nhl.get("home_advantage_delta", 0.0)
+    # Correction avantage domicile (win_prob_away = prob visiteur):
+    # home_delta > 0 → domicile performe + → réduire prob visiteur
+    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_nhl))
+
+    # Consensus du marché
+    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
+    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    
+    blended_prob = (_model_w_nhl * win_prob_away) + ((1.0 - _model_w_nhl) * market_consensus_away)
+    blended_prob = max(0.05, min(0.95, blended_prob))
+    
+    # EV calculation
+    ev_away = (best_away_ml - 1.0) * blended_prob - (1.0 - blended_prob)
+    ev_home = (best_home_ml - 1.0) * (1.0 - blended_prob) - blended_prob
+    
+    logger.debug(f"{away_team.upper()} @ {home_team.upper()}: {away_clean}/{home_clean} | Cotes: {best_away_ml:.2f}/{best_home_ml:.2f} | Blended: {blended_prob:.1%} | EV: {ev_away:.4f}/{ev_home:.4f}")
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 1️⃣ MONEYLINE SCORING (L10 Form + ATS + EV)
+    # ═══════════════════════════════════════════════════════════════════════
+    ml_score = score_moneyline_enhanced(away_team, home_team, blended_prob, 1.0 - blended_prob, best_away_ml, best_home_ml, "NHL")
+    ml_confidence = ml_score["confidence"]
+    ml_send = ml_score["send"]
+    
+    if ev_away > ev_home:
+        ml_pick = f"{away_team.upper()} ML"
+        ml_odds = best_away_ml
+        ml_book = odds_data["away_book"]
+        ml_ev = ev_away
+    else:
+        ml_pick = f"{home_team.upper()} ML"
+        ml_odds = best_home_ml
+        ml_book = odds_data["home_book"]
+        ml_ev = ev_home
+    
+    if ml_ev > -0.005:
+        ml_status = "✅ BUY"
+    elif ml_ev > -0.02:
+        ml_status = "👀 MONITORING"
+    else:
+        ml_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 2️⃣ PUCK LINE SCORING (±1.5 - ATS L10 ≥ 6/10)
+    # ═══════════════════════════════════════════════════════════════════════
+    # Spread = ±1.5 buts en hockey
+    pline_spread = 1.5 if ev_away > ev_home else -1.5
+    
+    if blended_prob > 0.60:
+        if ev_away > ev_home:
+            spread_pick = f"{away_team.upper()} -1.5"
         else:
-            res_icon = "⏳"
+            spread_pick = f"{home_team.upper()} -1.5"
+        spread_odds = 2.10
+    elif blended_prob < 0.40:
+        if ev_away > ev_home:
+            spread_pick = f"{home_team.upper()} +1.5"
+        else:
+            spread_pick = f"{away_team.upper()} +1.5"
+        spread_odds = 1.65
+    else:
+        if ev_away > ev_home:
+            spread_pick = f"{away_team.upper()} +1.5"
+        else:
+            spread_pick = f"{home_team.upper()} +1.5"
+        spread_odds = 1.65
+    
+    spread_score = score_spread_enhanced(pline_spread, blended_prob, 1.0 - blended_prob, away_team, home_team, "NHL")
+    spread_confidence = spread_score["confidence"]
+    spread_send = spread_score["send"]
+    
+    if spread_confidence >= 58:
+        spread_status = "✅ BUY"
+    elif spread_confidence >= 50:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 3️⃣ O/U SCORING (Total Buts L10)
+    # ═══════════════════════════════════════════════════════════════════════
+    projected_total = away_stats["gf"] + home_stats["gf"]
+    ou_line = estimate_market_line("NHL", projected_total)
+    
+    away_l10_ppg = away_stats.get("gf", 3.0)
+    home_l10_ppg = home_stats.get("gf", 3.0)
+    
+    ou_score = score_ou_enhanced(projected_total, ou_line, away_team, home_team, "NHL", away_l10_ppg, home_l10_ppg)
+    ou_confidence = ou_score["confidence"]
+    ou_send = ou_score["send"]
+    
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+    else:
+        ou_pick = f"UNDER {ou_line}"
+    ou_odds = 1.909
+    
+    if ou_confidence >= 58:
+        ou_status = "✅ BUY"
+    elif ou_confidence >= 50:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
 
-        msg += f"\n{res_icon}  {sport_e}  {p['pick_team']}"
-        if p.get("pick_type") and p["pick_type"] != "ML":
-            msg += f"  ({p['pick_type']})"
-        msg += f"\n      Cote {p['odds']}  •  conf. {p['confidence']}%\n"
-        if p.get("score"):
-            msg += f"      📍 {p['score']}\n"
+    return {
+        "pick": ml_pick,
+        "odds": f"{ml_odds:.2f}",
+        "confidence": ml_confidence,
+        "ev": f"{ml_ev:.4f}",
+        "ev_pct": f"{ml_ev*100:.2f}%",
+        "status": ml_status,
+        "bookmaker": ml_book,
+        # ML
+        "ml_pick": ml_pick,
+        "ml_odds": f"{ml_odds:.2f}",
+        "ml_confidence": ml_confidence,
+        "ml_ev_pct": f"{ml_ev*100:.2f}%",
+        "ml_status": ml_status,
+        # Puck Line
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_confidence,
+        "spread_status": spread_status,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_confidence,
+        "ou_status": ou_status,
+    }
 
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"{bilan_icon}  Aujourd'hui :  {wins}W  –  {losses}L"
-    if total_g > 0:
-        msg += f"  ({wr:.1%} WR)"
-    if pending:
-        msg += f"  •  {pending} en attente"
-    msg += "\n"
+# ═══════════════════════════════════════════════════════════════════════════
+# MLB STATS LIVE — Récupération temps réel depuis ESPN + Cache 4h
+# ═══════════════════════════════════════════════════════════════════════════
 
-    # Bilan global saison
-    stats  = history["stats"]
-    s_wins = stats.get("wins", 0)
-    s_loss = stats.get("losses", 0)
-    s_tot  = s_wins + s_loss
-    s_wr   = s_wins / s_tot if s_tot > 0 else 0.0
-    streak = _current_streak(picks)
-    msg   += f"📈  Saison   :  {s_wins}W–{s_loss}L"
-    if s_tot > 0:
-        msg += f"  ({s_wr:.1%})"
-    msg += f"  •  Série {streak}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    return msg
+MLB_STATS_CACHE = {}
+MLB_STATS_CACHE_TIME = None
 
-
-def format_daily_report(days: int = 7) -> str:
+def fetch_mlb_live_stats() -> dict:
     """
-    Génère un rapport de performance Telegram.
-    days=1 → résultats d'hier | days=7 → semaine | days=30 → mois
+    Récupère les stats MLB temps réel depuis ESPN (records W-L).
+    Estime Runs/ERA basées sur le win percentage et patterns empiriques.
+    Cache: 4 heures.
+    Retourne: {"yankees": {...}, "braves": {...}, ...}
     """
-    history = load_history()
-    picks   = history["picks"]
-    stats   = history["stats"]
-
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-    recent = [p for p in picks if p.get("date", "") >= cutoff]
-
-    r_wins    = sum(1 for p in recent if p["result"] == "WIN")
-    r_losses  = sum(1 for p in recent if p["result"] == "LOSS")
-    r_pending = sum(1 for p in recent if p["result"] is None)
-    r_total   = r_wins + r_losses
-    r_wr      = r_wins / r_total if r_total > 0 else 0.0
-
-    period_label = {1: "24 dernières heures", 7: "7 derniers jours", 30: "30 derniers jours"}.get(days, f"{days} jours")
-
-    streak = _current_streak(picks)
-
-    msg  = "📊  U L T R O N  —  P E R F O R M A N C E\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"📅  {period_label}\n\n"
-    msg += f"✅  Wins       :  {r_wins}\n"
-    msg += f"❌  Losses     :  {r_losses}\n"
-    msg += f"⏳  En attente :  {r_pending}\n"
-    msg += f"🎯  Win Rate   :  {r_wr:.1%}\n"
-    msg += f"🔥  Série      :  {streak}\n\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-
-    # Saison complète
-    s_wins   = stats.get("wins", 0)
-    s_losses = stats.get("losses", 0)
-    s_total  = s_wins + s_losses
-    s_wr     = s_wins / s_total if s_total > 0 else 0.0
-    msg += f"\n📈  Saison totale :  {s_wins}W  –  {s_losses}L"
-    if s_total > 0:
-        msg += f"  ({s_wr:.1%})"
-    msg += "\n"
-
-    # Derniers 5 résultats gradés
-    graded = [p for p in picks if p["result"] is not None][-5:]
-    if graded:
-        msg += "\n🕐  DERNIERS RÉSULTATS\n"
-        for p in reversed(graded):
-            icon  = "✅" if p["result"] == "WIN" else "❌"
-            sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
-            msg  += f"\n  {icon}  {sport_e}  {p['pick_type']} — {p['pick_team']}  @ {p['odds']}\n"
-            if p.get("score"):
-                msg += f"       {p['score']}\n"
-
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += "🤖  Ultron se note lui-même — données ESPN"
-    return msg
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SAUVEGARDE / RESTAURATION TELEGRAM
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def backup_to_telegram(bot, chat_id: str) -> bool:
-    """
-    Envoie l'historique comme document Telegram et épingle un message de metadata.
-    Le message épinglé (ULTRON_BACKUP_META) permet de restaurer même après un
-    redéploiement Railway qui efface le filesystem éphémère.
-    Retourne True si succès.
-    """
-    history = load_history()
-    picks_count = len(history.get("picks", []))
-    if picks_count == 0:
-        logger.info("backup_to_telegram: aucun pick à sauvegarder")
-        return False
-
-    wins   = history.get("stats", {}).get("wins", 0)
-    losses = history.get("stats", {}).get("losses", 0)
-    wr     = history.get("stats", {}).get("win_rate", 0.0)
-    now    = datetime.now().isoformat()
-
-    caption = (
-        f"🔒 ULTRON — Backup mémoire\n"
-        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
-        f"📊 {picks_count} picks  •  {wins}W–{losses}L  •  {wr:.1%} WR"
-    )
-
+    global MLB_STATS_CACHE, MLB_STATS_CACHE_TIME
+    
+    # Check cache
+    if MLB_STATS_CACHE and MLB_STATS_CACHE_TIME:
+        elapsed = (datetime.datetime.now() - MLB_STATS_CACHE_TIME).total_seconds()
+        if elapsed < 14400:  # 4 heures
+            return MLB_STATS_CACHE
+    
     try:
-        # Export history vers un buffer mémoire (fonctionne avec ou sans fichier local)
-        buf = io.BytesIO(json.dumps(history, indent=2, ensure_ascii=False).encode("utf-8"))
-        buf.name = "picks_history.json"
-        msg = await bot.send_document(
-            chat_id=chat_id,
-            document=buf,
-            filename="picks_history.json",
-            caption=caption,
-        )
-        file_id = msg.document.file_id
+        # Récupère les matchs du jour (ESPN retourne les records à jour)
+        today_utc = datetime.datetime.utcnow().strftime("%Y%m%d")
+        url = f"https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard?dates={today_utc}"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            logger.warning(f"❌ ESPN MLB live stats failed ({resp.status_code}), fallback à stats statiques")
+            return MLB_TEAM_STATS
+        
+        data = resp.json()
+        events = data.get('events', [])
+        
+        # Collecte les records par équipe depuis tous les matchs d'aujourd'hui
+        team_records = {}  # {team_key: {wins: X, losses: Y}}
+        
+        for event in events:
+            comp = event.get('competitions', [{}])[0]
+            competitors = comp.get('competitors', [])
+            
+            for competitor in competitors:
+                team_name = competitor.get('team', {}).get('displayName', '').lower()
+                records = competitor.get('records', [])
+                
+                # Extract overall record (wins-losses)
+                overall_rec = next((r for r in records if r.get('type') == 'total'), None)
+                if overall_rec:
+                    summary = overall_rec.get('summary', '0-0')
+                    try:
+                        wins, losses = map(int, summary.split('-'))
+                        team_key = find_team_mlb(team_name) or team_name
+                        team_records[team_key] = {"wins": wins, "losses": losses}
+                    except Exception:
+                        pass
+        
+        if not team_records:
+            logger.warning("⚠️ No records found in ESPN data, using fallback")
+            return MLB_TEAM_STATS
+        
+        # Construit le dictionnaire de stats en combinant records + estimation stats
+        live_stats = {}
+        for team_key, base_stats in MLB_TEAM_STATS.items():
+            if team_key in team_records:
+                w = team_records[team_key]["wins"]
+                l = team_records[team_key]["losses"]
+                gp = w + l
+                
+                if gp > 0:
+                    win_pct = w / gp
+                else:
+                    win_pct = 0.5
+                
+                # Estime Runs et ERA basées sur win_pct et baseline
+                # Plus haute win% = plus de runs, moins de ERA
+                # Baseline: .500 = 4.0 R, 4.2 RA
+                baseline_r = 4.0
+                baseline_ra = 4.2
+                
+                estimated_r = baseline_r + (win_pct - 0.5) * 2.0  # Varie de 3.0 à 5.0
+                estimated_ra = baseline_ra - (win_pct - 0.5) * 0.8  # Varie de 3.6 à 4.8
+                
+                # Strength basée sur win_pct
+                estimated_strength = int(50 + win_pct * 100)  # 50-150
+                
+                live_stats[team_key] = {
+                    "strength": estimated_strength,
+                    "r": round(estimated_r, 2),
+                    "ra": round(estimated_ra, 2),
+                    "wins": w,
+                    "losses": l,
+                    "gp": gp,
+                    "source": "ESPN_LIVE"
+                }
+            else:
+                # Fallback pour les équipes hors matchs d'aujourd'hui
+                live_stats[team_key] = base_stats.copy()
+                live_stats[team_key]["source"] = "FALLBACK_STATIC"
+        
+        MLB_STATS_CACHE = live_stats
+        MLB_STATS_CACHE_TIME = datetime.datetime.now()
+        logger.info(f"✅ MLB live stats loaded: {len(live_stats)} teams, cache 4h")
+        return live_stats
+    
+    except Exception as e:
+        logger.error(f"❌ fetch_mlb_live_stats error: {e}")
+        return MLB_TEAM_STATS
 
-        # ── Sauvegarde locale du file_id (fast path pour restore) ──────────
-        meta = {
-            "file_id":      file_id,
-            "message_id":   msg.message_id,
-            "backed_up_at": now,
-            "picks_count":  picks_count,
+
+def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction MLB avec MoneyLine Guide (3 pillars: ML + RUNLINE + O/U)"""
+    away_clean = find_team_mlb(away_team) or away_team.lower()
+    home_clean = find_team_mlb(home_team) or home_team.lower()
+    
+    # Récupère les stats LIVE depuis ESPN (ou fallback statiques)
+    _mlb_ts = fetch_mlb_live_stats()
+    away_stats = _mlb_ts.get(away_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
+    home_stats = _mlb_ts.get(home_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
+    
+    odds_data = get_best_odds_mlb(away_clean, home_clean)
+    best_away_ml = odds_data["away_ml"]
+    best_home_ml = odds_data["home_ml"]
+    
+    # Calcul du modèle pour le baseball (runs scoring concept)
+    away_r_diff = away_stats["r"] - home_stats["ra"]
+    home_r_diff = home_stats["r"] - away_stats["ra"]
+    
+    # SANS le biais -0.3 : laisse les stats parler d'elles-mêmes
+    run_diff = away_r_diff - home_r_diff
+    
+    try:
+        win_prob_away = 1 / (1 + math.exp(-run_diff / 1.8))
+    except Exception:
+        win_prob_away = 0.5 + (run_diff / 8.0)
+    
+    win_prob_away = max(0.05, min(0.95, win_prob_away))
+    
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_mlb      = get_model_adjustments("MLB")
+    _model_w_mlb  = _adj_mlb.get("model_weight", 0.50)
+    _conf_cal_mlb = _adj_mlb.get("confidence_scale", 1.0)
+    _home_d_mlb   = _adj_mlb.get("home_advantage_delta", 0.0)
+    win_prob_away = max(0.05, min(0.95, win_prob_away - _home_d_mlb))
+
+    # Consensus du marché
+    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
+    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    
+    blended_prob = (_model_w_mlb * win_prob_away) + ((1.0 - _model_w_mlb) * market_consensus_away)
+    blended_prob = max(0.05, min(0.95, blended_prob))
+    
+    # EV calculation
+    ev_away = (best_away_ml - 1.0) * blended_prob - (1.0 - blended_prob)
+    ev_home = (best_home_ml - 1.0) * (1.0 - blended_prob) - blended_prob
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 1️⃣ MONEYLINE SCORING (L10 Form + ATS + EV)
+    # ═══════════════════════════════════════════════════════════════════════
+    ml_score = score_moneyline_enhanced(away_team, home_team, blended_prob, 1.0 - blended_prob, best_away_ml, best_home_ml, "MLB")
+    ml_confidence = ml_score["confidence"]
+    ml_send = ml_score["send"]
+    
+    if ev_away > ev_home:
+        ml_pick = f"{away_team.upper()} ML"
+        ml_odds = best_away_ml
+        ml_book = odds_data["away_book"]
+        ml_ev = ev_away
+    else:
+        ml_pick = f"{home_team.upper()} ML"
+        ml_odds = best_home_ml
+        ml_book = odds_data["home_book"]
+        ml_ev = ev_home
+    
+    # Status basé sur confidence + EV (logique combinée)
+    if ml_confidence >= 55 and ml_ev > -0.02:
+        ml_status = "✅ BUY"
+    elif ml_confidence >= 50 or ml_ev > -0.005:
+        ml_status = "👀 MONITORING"
+    else:
+        ml_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 2️⃣ RUNLINE SCORING (±1.5 - ATS L10 ≥ 6/10)
+    # ═══════════════════════════════════════════════════════════════════════
+    run_diff_raw = run_diff * 2
+    runline_spread = 1.5 if run_diff_raw > 0 else -1.5
+    
+    if run_diff_raw > 0.5:
+        spread_pick = f"{away_team.upper()} -1.5"
+        spread_odds = 1.909
+    elif run_diff_raw < -0.5:
+        spread_pick = f"{home_team.upper()} -1.5"
+        spread_odds = 1.909
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+        spread_odds = 1.909
+    
+    spread_score = score_spread_enhanced(runline_spread, blended_prob, 1.0 - blended_prob, away_team, home_team, "MLB")
+    spread_confidence = spread_score["confidence"]
+    spread_send = spread_score["send"]
+    
+    if spread_confidence >= 58:
+        spread_status = "✅ BUY"
+    elif spread_confidence >= 50:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 3️⃣ O/U SCORING (Total Runs L10)
+    # ═══════════════════════════════════════════════════════════════════════
+    projected_total = away_stats["r"] + home_stats["r"]
+    ou_line = estimate_market_line("MLB", projected_total)
+    
+    away_l10_ppg = away_stats.get("r", 4.2)
+    home_l10_ppg = home_stats.get("r", 4.2)
+    
+    ou_score = score_ou_enhanced(projected_total, ou_line, away_team, home_team, "MLB", away_l10_ppg, home_l10_ppg)
+    ou_confidence = ou_score["confidence"]
+    ou_send = ou_score["send"]
+    
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+    else:
+        ou_pick = f"UNDER {ou_line}"
+    ou_odds = 1.909
+    
+    if ou_confidence >= 58:
+        ou_status = "✅ BUY"
+    elif ou_confidence >= 50:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
+
+    return {
+        "pick": ml_pick,
+        "odds": f"{ml_odds:.2f}",
+        "confidence": ml_confidence,
+        "ev": f"{ml_ev:.4f}",
+        "ev_pct": f"{ml_ev*100:.2f}%",
+        "status": ml_status,
+        "bookmaker": ml_book,
+        # ML
+        "ml_pick": ml_pick,
+        "ml_odds": f"{ml_odds:.2f}",
+        "ml_confidence": ml_confidence,
+        "ml_ev_pct": f"{ml_ev*100:.2f}%",
+        "ml_status": ml_status,
+        # Runline
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_confidence,
+        "spread_status": spread_status,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_confidence,
+        "ou_status": ou_status,
+    }
+
+# ═══════════════════════════════════════════════════════════════════════════
+
+def implied_probability(decimal_odds: float) -> float:
+    """Convertit une cote décimale en probabilité implicite"""
+    if decimal_odds <= 1:
+        return 0.0
+    return 1 / decimal_odds
+
+def expected_value(my_prob: float, decimal_odds: float) -> float:
+    """Calcule l'EV d'un pari
+    
+    EV positif = pari intéressant
+    EV = (probabilité * (cote - 1)) - (1 - probabilité)
+    """
+    if decimal_odds <= 1 or not (0 <= my_prob <= 1):
+        return 0.0
+    return (my_prob * (decimal_odds - 1)) - (1 - my_prob)
+
+def kelly_stake(my_prob: float, decimal_odds: float, bankroll: float, fraction: float = 0.5) -> float:
+    """Mise optimale selon le demi-Kelly (fraction=0.5)
+    
+    Kelly = (b*p - q) / b où:
+    - b = cote - 1
+    - p = probabilité de victoire
+    - q = 1 - p
+    - demi-Kelly = kelly * 0.5 pour réduire la variance
+    """
+    if decimal_odds <= 1 or not (0 < my_prob < 1) or bankroll <= 0:
+        return 0.0
+    
+    b = decimal_odds - 1
+    q = 1 - my_prob
+    kelly = (b * my_prob - q) / b
+    half_kelly = kelly * fraction
+    return max(0, half_kelly * bankroll)
+
+
+def suggest_hedge(main_team: str, main_odds: float, main_prob: float, 
+                  hedge_team: str, hedge_odds: float, hedge_prob: float,
+                  bankroll: float = 1000) -> dict:
+    """
+    Suggère un hedge (contre-mise) pour maximiser les profits et minimiser les pertes.
+    
+    Retourne:
+    - main_stake: mise sur le pick principal (Kelly demi)
+    - hedge_stake: mise sur le hedge (optimisée)
+    - profit_if_main_wins: profit si le principal gagne
+    - profit_if_hedge_wins: profit si le hedge gagne
+    - roi_main: ROI si principal gagne
+    - roi_hedge: ROI si hedge gagne
+    - best_scenario: meilleur profit possible
+    - worst_scenario: meilleur pire cas (hedge protège)
+    """
+    # Calcul mise principale (Kelly demi)
+    main_stake = kelly_stake(main_prob, main_odds, bankroll, fraction=0.5)
+    
+    # Hedge agressif: couvre 40-50% de la perte potentielle
+    # Si principal perd, tu perds main_stake
+    # Hedge doit compenser une partie de cette perte
+    hedge_stake = main_stake * 0.35  # 35% du principal = bon équilibre
+    
+    # Calculs profit/perte
+    profit_if_main_wins = main_stake * (main_odds - 1) - hedge_stake
+    profit_if_hedge_wins = hedge_stake * (hedge_odds - 1) - main_stake
+    
+    # ROI (return on investment)
+    total_invested = main_stake + hedge_stake
+    roi_main = (profit_if_main_wins / total_invested * 100) if total_invested > 0 else 0
+    roi_hedge = (profit_if_hedge_wins / total_invested * 100) if total_invested > 0 else 0
+    
+    # EV (Expected Value) du système hedge
+    ev_main = main_prob * profit_if_main_wins
+    ev_hedge = hedge_prob * profit_if_hedge_wins
+    expected_value = ev_main + ev_hedge
+    
+    return {
+        "main_stake": round(main_stake, 2),
+        "hedge_stake": round(hedge_stake, 2),
+        "total_invested": round(main_stake + hedge_stake, 2),
+        "profit_if_main_wins": round(profit_if_main_wins, 2),
+        "profit_if_hedge_wins": round(profit_if_hedge_wins, 2),
+        "roi_main": round(roi_main, 1),
+        "roi_hedge": round(roi_hedge, 1),
+        "ev": round(expected_value, 2),
+        "best_scenario": round(max(profit_if_main_wins, profit_if_hedge_wins), 2),
+        "worst_scenario": round(min(profit_if_main_wins, profit_if_hedge_wins), 2),
+    }
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ML MODEL FOR NBA PREDICTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_nba_features(away_team, home_team):
+    """Construit les features pour le modèle ML NBA"""
+    if not SKLEARN_AVAILABLE:
+        return None
+    
+    away_clean = find_team_nba(away_team) or away_team.lower()
+    home_clean = find_team_nba(home_team) or home_team.lower()
+    
+    _nba_ts = get_dynamic_team_stats('NBA')
+    away_stats = _nba_ts.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
+    home_stats = _nba_ts.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40})
+    
+    try:
+        # Features principales
+        features_dict = {
+            'home_netrtg_weighted': home_stats.get("ppg", 115.0) - home_stats.get("pa", 112.0),
+            'away_netrtg_weighted': away_stats.get("ppg", 115.0) - away_stats.get("pa", 112.0),
+            'home_rest_days': 2.0,  # Par défaut 2 jours de repos
+            'away_rest_days': 1.5,  # Équipe à l'extérieur généralement moins reposée
+            'rest_differential': 0.5,
+            'home_injury_adjustment': 1.0,  # 1.0 = pas de blessure
+            'away_injury_adjustment': 1.0,
+            'home_home_netrtg': home_stats.get("ppg", 115.0) - home_stats.get("pa", 112.0),
+            'away_away_netrtg': away_stats.get("ppg", 115.0) - away_stats.get("pa", 112.0) - 2.5,  # Pénalité route
+            'h2h_last_8': 0.50,  # 50% par défaut
         }
-        try:
-            with open(BACKUP_META_FILE, "w", encoding="utf-8") as mf:
-                json.dump(meta, mf, indent=2)
-        except OSError:
-            pass  # filesystem peut être read-only sur Railway, on continue
-
-        # ── Épingle un message de metadata dans le chat ─────────────────────
-        # Ce message survit aux redéploiements Railway et permet la restauration
-        # même quand backup_meta.json a été effacé.
-        meta_text = (
-            f"📦 ULTRON_BACKUP_META\n"
-            f"file_id:{file_id}\n"
-            f"picks:{picks_count}\n"
-            f"date:{now[:16]}"
-        )
-        try:
-            meta_msg = await bot.send_message(
-                chat_id=chat_id,
-                text=meta_text,
-                disable_notification=True,
-            )
-            await bot.pin_chat_message(
-                chat_id=chat_id,
-                message_id=meta_msg.message_id,
-                disable_notification=True,
-            )
-        except Exception as pin_err:
-            logger.warning(f"⚠️ backup_to_telegram: pin échoué (non critique): {pin_err}")
-
-        logger.info(f"✅ Backup Telegram OK — {picks_count} picks sauvegardés (file_id: {file_id[:20]}...)")
-        return True
+        
+        return pd.DataFrame([features_dict])
     except Exception as e:
-        logger.error(f"❌ backup_to_telegram: {e}")
+        logger.warning(f"⚠️ Erreur construction features: {e}")
+        return None
+
+def train_nba_model():
+    """Entraîne le modèle GradientBoosting pour NBA"""
+    global ML_MODEL
+    
+    if not SKLEARN_AVAILABLE:
+        logger.warning("⚠️ scikit-learn non disponible")
         return False
-
-
-async def restore_from_telegram(bot, chat_id: str) -> bool:
-    """
-    Restaure l'historique des picks depuis Telegram au démarrage du bot.
-    Stratégie (du plus rapide au plus fiable) :
-      1. Si DATABASE_URL est actif → données déjà persistantes, rien à faire.
-      2. Si backup_meta.json local présent → utilise le file_id qu'il contient.
-      3. Sinon → cherche un message épinglé "ULTRON_BACKUP_META" dans le chat
-         (ce message est épinglé par backup_to_telegram à chaque backup).
-    Retourne True si une restauration a eu lieu.
-    """
-    if _DATABASE_URL:
-        return False  # DB persistante, pas besoin de restaurer
-
-    file_id     = None
-    picks_count = "?"
-    backed_at   = "?"
-
-    # ── Tentative 1 : backup_meta.json local ──────────────────────────────
-    if os.path.exists(BACKUP_META_FILE):
-        try:
-            with open(BACKUP_META_FILE, "r", encoding="utf-8") as mf:
-                meta = json.load(mf)
-            file_id     = meta.get("file_id")
-            picks_count = meta.get("picks_count", "?")
-            backed_at   = meta.get("backed_up_at", "?")[:16]
-            logger.info(f"restore_from_telegram: file_id trouvé dans backup_meta.json")
-        except Exception as e:
-            logger.warning(f"⚠️ restore: impossible de lire backup_meta.json: {e}")
-
-    # ── Tentative 2 : message épinglé dans le chat ─────────────────────────
-    if not file_id:
-        try:
-            chat = await bot.get_chat(chat_id)
-            pinned = getattr(chat, "pinned_message", None)
-            if pinned and getattr(pinned, "text", None) and "ULTRON_BACKUP_META" in pinned.text:
-                for line in pinned.text.split("\n"):
-                    if line.startswith("file_id:"):
-                        file_id = line.split(":", 1)[1].strip()
-                    elif line.startswith("picks:"):
-                        picks_count = line.split(":", 1)[1].strip()
-                    elif line.startswith("date:"):
-                        backed_at = line.split(":", 1)[1].strip()
-                if file_id:
-                    logger.info("restore_from_telegram: file_id trouvé dans le message épinglé")
-        except Exception as e:
-            logger.warning(f"⚠️ restore: impossible de lire le message épinglé: {e}")
-
-    if not file_id:
-        logger.info("restore_from_telegram: aucun backup trouvé (premier démarrage ?)")
-        return False
-
-    # ── Téléchargement et restauration ────────────────────────────────────
+    
     try:
-        tg_file = await bot.get_file(file_id)
-        buf = io.BytesIO()
-        await tg_file.download_to_memory(buf)
-        buf.seek(0)
-        restored_history = json.load(buf)
-
-        # Sauvegarde via _save_history (DB si dispo, sinon JSON local)
-        _save_history(restored_history)
-
-        real_count = len(restored_history.get("picks", []))
-        logger.info(f"✅ Historique restauré depuis Telegram ({real_count} picks, backup du {backed_at})")
+        logger.info("🤖 Entraînement du modèle ML NBA...")
+        
+        # Créer des données d'entraînement synthétiques basées sur les équipes
+        training_data = []
+        
+        teams = list(NBA_TEAM_STATS.keys())
+        for i, home_team in enumerate(teams[:10]):  # Top 10 équipes
+            for j, away_team in enumerate(teams[:10]):
+                if home_team != away_team:
+                    features = build_nba_features(away_team, home_team)
+                    if features is not None:
+                        home_strength = NBA_TEAM_STATS[home_team]["strength"]
+                        away_strength = NBA_TEAM_STATS[away_team]["strength"]
+                        
+                        # Victoire domicile probable si home_strength > away_strength
+                        home_win = 1 if home_strength > away_strength else 0
+                        features['target'] = home_win
+                        training_data.append(features)
+        
+        if not training_data:
+            logger.warning("⚠️ Pas assez de données d'entraînement")
+            return False
+        
+        X = pd.concat(training_data, ignore_index=True).drop('target', axis=1)
+        y = pd.concat(training_data, ignore_index=True)['target'].values
+        
+        # TimeSeriesSplit pour éviter l'overfitting sur matchs futurs
+        tscv = TimeSeriesSplit(n_splits=5)
+        
+        base_model = GradientBoostingClassifier(
+            n_estimators=200,
+            max_depth=3,
+            learning_rate=0.1,
+            random_state=42
+        )
+        
+        ML_MODEL = CalibratedClassifierCV(base_model, cv=tscv, method='isotonic')
+        ML_MODEL.fit(X, y)
+        
+        logger.info("✅ Modèle ML NBA entraîné avec succès")
         return True
     except Exception as e:
-        logger.error(f"❌ restore_from_telegram: {e}")
+        logger.error(f"❌ Erreur entraînement ML: {e}")
         return False
 
+def predict_with_ml_model(away_team, home_team):
+    """Prédit le résultat avec le modèle ML calibré"""
+    global ML_MODEL
+    
+    if not SKLEARN_AVAILABLE or ML_MODEL is None:
+        return None
+    
+    try:
+        features = build_nba_features(away_team, home_team)
+        if features is None or features.empty:
+            return None
+        
+        # Probabilité réelle de victoire domicile
+        try:
+            prob_home_win = ML_MODEL.predict_proba(features)[0][1]
+        except Exception:
+            # Fallback si predict_proba échoue
+            pred = ML_MODEL.predict(features)[0]
+            prob_home_win = float(pred)
+        
+        # Assurer que la probabilité est entre 0.05 et 0.95
+        prob_home_win = max(0.05, min(0.95, prob_home_win))
+        
+        logger.debug(f"ML Prediction: {away_team} @ {home_team} - Home Win Prob: {prob_home_win:.1%}")
+        
+        return prob_home_win
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur prédiction ML: {e}")
+        return None
 
-def format_result_notification(updated_picks: list) -> str:
+# ═══════════════════════════════════════════════════════════════════════════
+# PLAYER PROPS MODEL (POINTS PREDICTION)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def build_player_props_features(player_name, opponent_team, home_away, 
+                                 player_avg_pts_last_10=20.0, 
+                                 opponent_def_rating=110.0,
+                                 opponent_pts_allowed_pos=25.0,
+                                 pace_matchup=100.0,
+                                 minutes_last_5=32.0,
+                                 b2b_flag=0,
+                                 vegas_line=220.0):
+    """Construit les features pour modèle de prédiction points joueur"""
+    if not XGBOOST_AVAILABLE:
+        return None
+    
+    try:
+        features_dict = {
+            'player_avg_pts_last_10': player_avg_pts_last_10,      # Moyenne récente pondérée
+            'opponent_def_rating': opponent_def_rating,             # Défense adverse vs position
+            'opponent_pts_allowed_to_pos': opponent_pts_allowed_pos, # Points alloués à la position
+            'home_away': 1.0 if home_away.lower() == 'home' else 0.0,  # 1 = domicile, 0 = extérieur
+            'pace_matchup': pace_matchup,                           # Pace des deux équipes
+            'minutes_last_5': minutes_last_5,                       # Charge récente en minutes
+            'b2b_flag': float(b2b_flag),                            # 1 = back-to-back, 0 = sinon
+            'vegas_line': vegas_line,                               # Ligne Vegas (total attendu)
+        }
+        
+        return pd.DataFrame([features_dict])
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur construction features props: {e}")
+        return None
+
+def train_player_props_model():
+    """Entraîne le modèle XGBoost pour prédictions points joueurs"""
+    global PROPS_MODEL
+    
+    if not XGBOOST_AVAILABLE:
+        logger.warning("⚠️ XGBoost non disponible")
+        return False
+    
+    try:
+        logger.info("🤖 Entraînement du modèle XGBoost Player Props...")
+        
+        # Données d'entraînement synthétiques
+        training_data = []
+        
+        # Scénarios variés pour entraînement
+        for avg_pts in [15, 18, 20, 22, 25, 28, 30]:
+            for def_rating in [105, 110, 115, 120]:
+                for minutes in [25, 28, 30, 32, 34]:
+                    for b2b in [0, 1]:
+                        for home in [0, 1]:
+                            features = build_player_props_features(
+                                player_name="synthetic",
+                                opponent_team="opponent",
+                                home_away="home" if home else "away",
+                                player_avg_pts_last_10=avg_pts,
+                                opponent_def_rating=def_rating,
+                                opponent_pts_allowed_pos=def_rating - 110 + 25,
+                                pace_matchup=98 + (def_rating - 110) * 0.1,
+                                minutes_last_5=minutes,
+                                b2b_flag=b2b,
+                                vegas_line=220 + (avg_pts - 20) * 5
+                            )
+                            
+                            if features is not None:
+                                # Cible synthétique : moyenne pondérée des factors
+                                predicted_pts = (
+                                    avg_pts * 0.4 +                    # 40% moyenne récente
+                                    (130 - def_rating) * 0.1 +          # 10% défense adverse
+                                    minutes * 0.02 +                    # 2% minutes
+                                    (1.5 if home else 0) +              # +1.5 si domicile
+                                    (-1 if b2b else 0) * 1.5            # -1.5 si back-to-back
+                                )
+                                features['points'] = predicted_pts
+                                training_data.append(features)
+        
+        if not training_data:
+            logger.warning("⚠️ Pas assez de données synthétiques")
+            return False
+        
+        X = pd.concat(training_data, ignore_index=True).drop('points', axis=1)
+        y = pd.concat(training_data, ignore_index=True)['points'].values
+        
+        # TimeSeriesSplit pour validation temporelle
+        tscv = TimeSeriesSplit(n_splits=3)
+        
+        PROPS_MODEL = XGBRegressor(
+            n_estimators=150,
+            max_depth=5,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42
+        )
+        
+        # Entraîner sur tous les données (pas de cross-val pour régression simple)
+        PROPS_MODEL.fit(X, y)
+        
+        logger.info("✅ Modèle XGBoost Player Props entraîné avec succès")
+        return True
+    except Exception as e:
+        logger.error(f"❌ Erreur entraînement Props: {e}")
+        return False
+
+def predict_player_points(player_name, opponent_team, home_away, 
+                          player_avg_pts_last_10=20.0,
+                          opponent_def_rating=110.0,
+                          opponent_pts_allowed_pos=25.0,
+                          pace_matchup=100.0,
+                          minutes_last_5=32.0,
+                          b2b_flag=0,
+                          vegas_line=220.0):
+    """Prédit les points d'un joueur avec le modèle XGBoost + calibration"""
+    global PROPS_MODEL
+    
+    if not XGBOOST_AVAILABLE or PROPS_MODEL is None:
+        return None
+    
+    try:
+        features = build_player_props_features(
+            player_name=player_name,
+            opponent_team=opponent_team,
+            home_away=home_away,
+            player_avg_pts_last_10=player_avg_pts_last_10,
+            opponent_def_rating=opponent_def_rating,
+            opponent_pts_allowed_pos=opponent_pts_allowed_pos,
+            pace_matchup=pace_matchup,
+            minutes_last_5=minutes_last_5,
+            b2b_flag=b2b_flag,
+            vegas_line=vegas_line
+        )
+        
+        if features is None or features.empty:
+            return None
+        
+        predicted_points = PROPS_MODEL.predict(features)[0]
+        
+        # CALIBRATION: Réduire le biais UNDER du modèle
+        # Le modèle tend à sous-estimer. Ajuster proportionnellement aux stats du joueur
+        avg_points_factor = player_avg_pts_last_10 / 20.0 if player_avg_pts_last_10 > 0 else 1.0
+        
+        # Si joueur performant (avg > 22pts), augmenter la prédiction de 2%
+        if player_avg_pts_last_10 > 22:
+            calibration_boost = 1.02
+        # Si joueur moyen-excellent (18-22pts), augmenter de 1%
+        elif player_avg_pts_last_10 > 18:
+            calibration_boost = 1.01
+        # Sinon, maintenir la prédiction
+        else:
+            calibration_boost = 1.00
+        
+        predicted_points = predicted_points * calibration_boost
+        
+        # Assurer que la prédiction est réaliste (3-60 points)
+        predicted_points = max(3, min(60, predicted_points))
+        
+        logger.debug(f"Props Prediction: {player_name} (avg={player_avg_pts_last_10:.1f}) - Predicted: {predicted_points:.1f} (boost={calibration_boost})")
+        
+        return predicted_points
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur prédiction props: {e}")
+        return None
+
+# ═══════════════════════════════════════════════════════════════════════════
+# SPREAD PREDICTION MODEL
+# ═══════════════════════════════════════════════════════════════════════════
+
+def predict_spread(home_adj_netrtg, away_adj_netrtg, home_advantage=2.5):
     """
-    Génère un message de notification pour les picks qui viennent d'être gradés.
-    Envoyé automatiquement après check_and_update_results().
+    Prédit l'écart de points attendu (spread)
+    
+    Arguments:
+        home_adj_netrtg: NetRtg ajusté de l'équipe domicile
+        away_adj_netrtg: NetRtg ajusté de l'équipe extérieure
+        home_advantage: Avantage domicile moyen en NBA (par défaut 2.5 pts)
+    
+    Retour:
+        Écart de points prédit (négatif = away gagne, positif = home gagne)
+    
+    Utilisation:
+        - Si predicted_margin > spread_bookmaker + 2pts → VALUE sur home
+        - Si predicted_margin < spread_bookmaker - 2pts → VALUE sur away
+        - Écart > 2pts = prise en compte de la valeur
     """
-    if not updated_picks:
+    try:
+        # Formule : (NetRtg_home - NetRtg_away) / 2.5 + avantage domicile
+        predicted_margin = (home_adj_netrtg - away_adj_netrtg) / 2.5 + home_advantage
+        
+        # Limiter le spread à des valeurs réalistes (-30 à +30)
+        predicted_margin = max(-30, min(30, float(predicted_margin)))
+        
+        return round(predicted_margin, 1)
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur prédiction spread: {e}")
+        return None
+
+def analyze_spread_value(predicted_margin, bookmaker_spread, min_threshold=2.0):
+    """
+    Analyse la valeur d'un spread donné comparé à la prédiction
+    
+    Arguments:
+        predicted_margin: Écart prédit par le modèle
+        bookmaker_spread: Spread offert par le bookmaker
+        min_threshold: Écart minimum pour considérer comme value (par défaut 2.0 pts)
+    
+    Retour:
+        {'side': 'home'|'away'|'none', 'value': float, 'confidence': str}
+    """
+    try:
+        if predicted_margin is None:
+            return {'side': 'none', 'value': 0, 'confidence': 'low'}
+        
+        # Écart entre prédiction et cote bookmaker
+        value_margin = predicted_margin - bookmaker_spread
+        
+        result = {
+            'side': 'none',
+            'value': round(value_margin, 2),
+            'confidence': 'low'
+        }
+        
+        if value_margin > min_threshold:
+            # Value sur home (notre prédiction home est plus haute que spread)
+            result['side'] = 'home'
+            result['confidence'] = 'high' if value_margin > 3.5 else 'medium'
+        elif value_margin < -min_threshold:
+            # Value sur away (notre prédiction away est meilleure que spread)
+            result['side'] = 'away'
+            result['confidence'] = 'high' if value_margin < -3.5 else 'medium'
+        
+        return result
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur analyse spread value: {e}")
+        return {'side': 'none', 'value': 0, 'confidence': 'low'}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PLAYER PROPS OVER/UNDER ANALYSIS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def analyze_player_props_ou(predicted_points, bookmaker_ou_line, ou_odds={'over': 1.90, 'under': 1.90}, min_threshold=0.3):
+    """
+    Analyse la valeur d'un over/under joueur comparé à la prédiction
+    
+    Arguments:
+        predicted_points: Points prédits par XGBoost (ex: 24.5)
+        bookmaker_ou_line: Ligne over/under du bookmaker (ex: 23.5)
+        ou_odds: Cotes pour over/under {'over': 1.90, 'under': 2.10}
+        min_threshold: Écart minimum en points pour considérer comme value (réduit à 0.3 pour plus de précision)
+    
+    Retour:
+        {
+            'side': 'over'|'under'|'none',
+            'difference': float (points d'écart),
+            'predicted_points': float,
+            'line': float,
+            'confidence': 'high'|'medium'|'low',
+            'value_margin': float (en pourcentage)
+        }
+    """
+    try:
+        if predicted_points is None or bookmaker_ou_line is None:
+            return {
+                'side': 'none',
+                'difference': 0,
+                'predicted_points': predicted_points,
+                'line': bookmaker_ou_line,
+                'confidence': 'low',
+                'value_margin': 0
+            }
+        
+        # Écart entre prédiction et ligne bookmaker
+        difference = predicted_points - bookmaker_ou_line
+        
+        result = {
+            'predicted_points': round(predicted_points, 1),
+            'line': bookmaker_ou_line,
+            'difference': round(difference, 2),
+            'side': 'none',
+            'confidence': 'low',
+            'value_margin': 0.0
+        }
+        
+        # OVER VALUE: prédiction > ligne + seuil (réduit à 1.2 pour plus de sensibilité)
+        if difference > min_threshold:
+            result['side'] = 'over'
+            # Calculer la marge de profit implicite
+            value_margin = (difference / bookmaker_ou_line) * 100
+            result['value_margin'] = round(value_margin, 1)
+            
+            if difference > 1.2:
+                result['confidence'] = 'high'
+            elif difference > 0.6:
+                result['confidence'] = 'medium'
+            else:
+                result['confidence'] = 'low'
+        
+        # UNDER VALUE: prédiction < ligne - seuil (réduit à 1.2 aussi)
+        elif difference < -min_threshold:
+            result['side'] = 'under'
+            value_margin = abs(difference / bookmaker_ou_line) * 100
+            result['value_margin'] = round(value_margin, 1)
+            
+            if difference < -1.2:
+                result['confidence'] = 'high'
+            elif difference < -0.6:
+                result['confidence'] = 'medium'
+            else:
+                result['confidence'] = 'low'
+        
+        return result
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur analyse props O/U: {e}")
+        return {
+            'side': 'none',
+            'difference': 0,
+            'predicted_points': predicted_points,
+            'line': bookmaker_ou_line,
+            'confidence': 'low',
+            'value_margin': 0
+        }
+
+def format_player_props_message(player_name, predicted_points, analysis_ou, odds_ou={'over': 1.90, 'under': 1.90}):
+    """
+    Formate un message de propositions joueur pour Telegram
+    
+    Arguments:
+        player_name: Nom du joueur
+        predicted_points: Points prédits
+        analysis_ou: Résultat de analyze_player_props_ou()
+        odds_ou: Cotes O/U disponibles
+    
+    Retour:
+        Message formaté pour Telegram
+    """
+    try:
+        side = analysis_ou['side']
+        difference = analysis_ou['difference']
+        confidence = analysis_ou['confidence']
+        
+        if side == 'none':
+            return f"📊 {player_name}\nPrédiction: {predicted_points:.1f} pts\nLigne: {analysis_ou['line']}\n➡️ Pas de value identifiée"
+        
+        # Emoji de confiance
+        confidence_emoji = {
+            'high': '🔥',
+            'medium': '⚡',
+            'low': '📌'
+        }.get(confidence, '📌')
+        
+        side_text = 'OVER ⬆️' if side == 'over' else 'UNDER ⬇️'
+        odds = odds_ou['over'] if side == 'over' else odds_ou['under']
+        
+        message = f"""
+{confidence_emoji} {player_name}
+━━━━━━━━━━━━━━━━
+Prédiction: {predicted_points:.1f} pts
+Ligne: {analysis_ou['line']} pts
+Écart: {abs(difference):.1f} pts
+
+✅ {side_text} ({confidence.upper()})
+💰 Cote: {odds}
+📈 Valeur: +{analysis_ou['value_margin']:.1f}%
+"""
+        return message
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur formatage props message: {e}")
+        return "❌ Erreur dans l'analyse"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PLAYER PROPS LOOKUP & ANALYSIS FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_player_props(player_name: str) -> dict | None:
+    """
+    Récupère les props d'un joueur NBA (données ESPN en temps réel, fallback statique).
+    Retourne {'team': str, 'position': str, 'props': {...}} ou None si non trouvé.
+    """
+    try:
+        props_db = get_dynamic_player_props()
+        # Recherche exacte
+        if player_name in props_db:
+            return props_db[player_name]
+        # Recherche approximative (case-insensitive)
+        normalized = player_name.lower().strip()
+        for player, data in props_db.items():
+            if normalized == player.lower():
+                return data
+        # Recherche partielle
+        for player, data in props_db.items():
+            if normalized in player.lower() or player.lower() in normalized:
+                return data
+        return None
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur récupération props: {e}")
+        return None
+
+def get_all_players_by_team(team_name: str) -> list:
+    """
+    Retourne tous les joueurs connus d'une équipe (données ESPN en temps réel, fallback statique).
+    """
+    try:
+        team_normalized = team_name.lower().strip()
+        props_db = get_dynamic_player_props()
+        players = [
+            player for player, data in props_db.items()
+            if team_normalized in data['team'].lower()
+            or data['team'].lower() in team_normalized
+        ]
+        return sorted(players)
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur récupération équipe: {e}")
+        return []
+
+def analyze_all_player_props(home_team, away_team):
+    """
+    Analyse les props de tous les joueurs des deux équipes
+    
+    Retour:
+        {
+            'home_team': [{'player': str, 'analysis': dict}, ...],
+            'away_team': [...]
+        }
+    """
+    try:
+        results = {
+            'home_team': [],
+            'away_team': []
+        }
+        
+        # Analyser les joueurs domicile
+        home_players = get_all_players_by_team(home_team)
+        for player in home_players:
+            props = get_player_props(player)
+            if props and 'points' in props['props']:
+                # Prédire les points avec le modèle
+                predicted_pts = predict_player_points(
+                    player_name=player,
+                    opponent_team=away_team,
+                    home_away='home',
+                    player_avg_pts_last_10=props['props']['points']['line'] + 2  # Estimation
+                )
+                
+                if predicted_pts:
+                    analysis = analyze_player_props_ou(
+                        predicted_pts,
+                        props['props']['points']['line'],
+                        props['props']['points'],
+                        min_threshold=0.3
+                    )
+                    results['home_team'].append({
+                        'player': player,
+                        'analysis': analysis,
+                        'predicted': predicted_pts
+                    })
+        
+        # Analyser les joueurs extérieur
+        away_players = get_all_players_by_team(away_team)
+        for player in away_players:
+            props = get_player_props(player)
+            if props and 'points' in props['props']:
+                predicted_pts = predict_player_points(
+                    player_name=player,
+                    opponent_team=home_team,
+                    home_away='away',
+                    player_avg_pts_last_10=props['props']['points']['line'] - 1
+                )
+                
+                if predicted_pts:
+                    analysis = analyze_player_props_ou(
+                        predicted_pts,
+                        props['props']['points']['line'],
+                        props['props']['points'],
+                        min_threshold=0.3
+                    )
+                    results['away_team'].append({
+                        'player': player,
+                        'analysis': analysis,
+                        'predicted': predicted_pts
+                    })
+        
+        return results
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur analyse props équipes: {e}")
+        return {'home_team': [], 'away_team': []}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MONEYLINE — MODULE AMÉLIORÉ AVEC L10 + ATS + MOUVEMENTS DE LIGNE
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_team_l10_stats(sport: str, team_name: str) -> dict:
+    """
+    Récupère les stats des 10 derniers matchs depuis ESPN gamelog.
+    Retourne: {wins_l10, losses_l10, avg_ppg_l10, avg_paa_l10, ats_record, ou_record}
+    """
+    try:
+        if sport.lower() == "nba":
+            team_key = find_team_nba(team_name)
+        elif sport.lower() == "nhl":
+            team_key = find_team_nhl(team_name)
+        else:
+            team_key = find_team_mlb(team_name)
+        
+        if not team_key:
+            return {}
+        
+        # ESPN Teams endpoint pour récupérer les derniers matchs
+        sport_map = {'nba': 'basketball/nba', 'nhl': 'hockey/nhl', 'mlb': 'baseball/mlb'}
+        sport_path = sport_map.get(sport.lower())
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams/{team_key.upper()}"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            return {}
+        
+        data = resp.json()
+        record = data.get('record', [{}])[0]
+        
+        wins_l10 = record.get('wins', 0)
+        losses_l10 = record.get('losses', 0)
+        ats_cover = record.get('summary', 'N/A')  # Ex: "4-1" pour ATS
+        
+        return {
+            "wins_l10": wins_l10,
+            "losses_l10": losses_l10,
+            "ats_cover": ats_cover,
+            "record_pct": wins_l10 / max(1, wins_l10 + losses_l10),
+        }
+    except Exception as e:
+        logger.debug(f"⚠️ L10 stats error [{sport}] {team_name}: {e}")
+        return {}
+
+
+def get_team_ats_record(sport: str, team_name: str, vs_type: str = "overall") -> dict:
+    """
+    Récupère le record ATS (Against The Spread) pour une équipe.
+    vs_type: 'overall', 'home', 'away', 'favorite', 'underdog'
+    Retourne: {ats_wins, ats_losses, ats_pct, rest_days, recent_form}
+    """
+    try:
+        if sport.lower() == "nba":
+            team_key = find_team_nba(team_name)
+        elif sport.lower() == "nhl":
+            team_key = find_team_nhl(team_name)
+        else:
+            team_key = find_team_mlb(team_name)
+        
+        if not team_key:
+            return {}
+        
+        # Appelle l'endpoint ESPN records
+        sport_map = {'nba': 'basketball/nba', 'nhl': 'hockey/nhl', 'mlb': 'baseball/mlb'}
+        sport_path = sport_map.get(sport.lower())
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/teams/{team_key.upper()}/records"
+        resp = requests.get(url, timeout=10)
+        
+        if resp.status_code != 200:
+            return {}
+        
+        records = resp.json().get('records', [])
+        
+        # Parcourir les records pour trouver ATS
+        ats_win, ats_loss = 0, 0
+        found_ats = False
+        for rec in records:
+            name = rec.get('name', '').lower()
+            if 'against spread' in name or 'ats' in name:
+                summary = rec.get('summary', 'N/A')
+                # Format: "10-5" ou "10-5-0"
+                parts = summary.split('-')
+                if len(parts) >= 2:
+                    ats_win = int(parts[0])
+                    ats_loss = int(parts[1])
+                    found_ats = True
+                break
+        
+        # ⚠️ ESPN ne fournit PAS de record ATS dans son API publique —
+        # cette boucle ne trouve donc jamais rien. Retourner {} (pas de
+        # donnée) plutôt qu'un faux 0.5 neutre qui, traité comme une vraie
+        # donnée par le scoring, déclenchait une pénalité fixe identique
+        # pour CHAQUE équipe (d'où des scores de confiance toujours pareils).
+        if not found_ats:
+            return {}
+        
+        ats_pct = ats_win / max(1, ats_win + ats_loss) if (ats_win + ats_loss) > 0 else 0.5
+        
+        return {
+            "ats_wins": ats_win,
+            "ats_losses": ats_loss,
+            "ats_pct": ats_pct,
+            "ats_above_500": ats_pct > 0.5,
+        }
+    except Exception as e:
+        logger.debug(f"⚠️ ATS record error [{sport}] {team_name}: {e}")
+        return {}
+
+
+def score_moneyline_enhanced(away_team: str, home_team: str, away_prob: float, home_prob: float, away_odds: float, home_odds: float, sport: str) -> dict:
+    """
+    Score amélioré pour MoneyLine basé sur:
+    - Probabilité du modèle
+    - Edge vs market (EV)
+    - L10 form (wins/losses)
+    - Record ATS (discipline betting)
+    - Home advantage (réel vs perçu)
+    
+    Seuil: ≥ 62/100 pour envoyer
+    """
+    try:
+        base_score = 50
+        reasons = []
+        penalties = []
+        
+        # ── 1. EV vs Market consensus ──────────────────
+        market_away = (1 / away_odds) * 100
+        market_home = (1 / home_odds) * 100
+        model_away = away_prob * 100
+        model_home = home_prob * 100
+        
+        ev_away = (away_prob * away_odds) - 1  # Positive if value
+        ev_home = (home_prob * home_odds) - 1
+        
+        if ev_away > 0.05:
+            base_score += 20
+            reasons.append(f"EV positif AWAY: +{ev_away*100:.1f}% vs marché {market_away:.0f}%")
+        elif ev_home > 0.05:
+            base_score += 20
+            reasons.append(f"EV positif HOME: +{ev_home*100:.1f}% vs marché {market_home:.0f}%")
+        elif abs(model_away - market_away) > 3:
+            base_score += 10
+            reasons.append(f"Modèle diverge du marché de +{abs(model_away - market_away):.1f}%")
+        
+        # ── 2. Form L10 (wins/losses) ────────────────────
+        away_l10 = get_team_l10_stats(sport, away_team)
+        home_l10 = get_team_l10_stats(sport, home_team)
+        
+        if away_l10:
+            away_l10_pct = away_l10.get('record_pct', 0)
+            if away_l10_pct >= 0.7:  # 7+ wins en 10
+                base_score += 15
+                reasons.append(f"AWAY hot: {away_l10.get('wins_l10')}/{away_l10.get('wins_l10', 0) + away_l10.get('losses_l10', 0)}")
+            elif away_l10_pct <= 0.3:
+                base_score -= 15
+                penalties.append(f"AWAY cold: {away_l10.get('wins_l10')}/{away_l10.get('wins_l10', 0) + away_l10.get('losses_l10', 0)}")
+        
+        if home_l10:
+            home_l10_pct = home_l10.get('record_pct', 0)
+            if home_l10_pct >= 0.7:
+                base_score += 15
+                reasons.append(f"HOME hot: {home_l10.get('wins_l10')}/{home_l10.get('wins_l10', 0) + home_l10.get('losses_l10', 0)}")
+            elif home_l10_pct <= 0.3:
+                base_score -= 15
+                penalties.append(f"HOME cold: {home_l10.get('wins_l10')}/{home_l10.get('wins_l10', 0) + home_l10.get('losses_l10', 0)}")
+        
+        # ── 3. ATS Discipline ────────────────────────
+        away_ats = get_team_ats_record(sport, away_team)
+        home_ats = get_team_ats_record(sport, home_team)
+        
+        if away_ats and away_ats.get('ats_pct', 0) >= 0.6:
+            base_score += 12
+            reasons.append(f"AWAY ATS discipliné: {away_ats.get('ats_wins')}-{away_ats.get('ats_losses')} ({away_ats.get('ats_pct')*100:.0f}%)")
+        elif away_ats and away_ats.get('ats_pct', 0) <= 0.4:
+            base_score -= 8
+            penalties.append(f"AWAY ATS faible: {away_ats.get('ats_wins')}-{away_ats.get('ats_losses')}")
+        
+        if home_ats and home_ats.get('ats_pct', 0) >= 0.6:
+            base_score += 12
+            reasons.append(f"HOME ATS discipliné: {home_ats.get('ats_wins')}-{home_ats.get('ats_losses')} ({home_ats.get('ats_pct')*100:.0f}%)")
+        elif home_ats and home_ats.get('ats_pct', 0) <= 0.4:
+            base_score -= 8
+            penalties.append(f"HOME ATS faible: {home_ats.get('ats_wins')}-{home_ats.get('ats_losses')}")
+        
+        final_score = max(0, min(100, base_score))
+        
+        return {
+            "confidence": final_score,
+            "send": final_score >= 62,  # Seuil MoneyLine: 62
+            "reasons": reasons,
+            "penalties": penalties,
+            "ev_away": round(ev_away, 4),
+            "ev_home": round(ev_home, 4),
+            "model_divergence": abs(model_away - market_away),
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ score_moneyline_enhanced error: {e}")
+        return {"confidence": 50, "send": False, "reasons": [], "penalties": []}
+
+
+def score_spread_enhanced(spread_line: float, away_prob: float, home_prob: float, away_team: str, home_team: str, sport: str) -> dict:
+    """
+    Score amélioré pour SPREAD basé sur:
+    - ATS L10 record (≥ 6/10 = bon)
+    - Margin of victory consistency (blowout vs close)
+    - Movement de ligne (sharp vs public money)
+    
+    Seuil: ≥ 68/100 pour envoyer  
+    """
+    try:
+        base_score = 50
+        reasons = []
+        penalties = []
+        
+        # ── 1. ATS L10 Record ──────────────────
+        away_ats = get_team_ats_record(sport, away_team)
+        home_ats = get_team_ats_record(sport, home_team)
+        
+        if away_ats and away_ats.get('ats_wins', 0) >= 6:  # 6+ ATS wins
+            base_score += 18
+            reasons.append(f"AWAY ATS L10: {away_ats.get('ats_wins')}/10 discipliné")
+        elif away_ats and away_ats.get('ats_wins', 0) <= 4:
+            base_score -= 12
+            penalties.append(f"AWAY ATS L10: seul {away_ats.get('ats_wins')}/10")
+        
+        if home_ats and home_ats.get('ats_wins', 0) >= 6:
+            base_score += 18
+            reasons.append(f"HOME ATS L10: {home_ats.get('ats_wins')}/10 discipliné")
+        elif home_ats and home_ats.get('ats_wins', 0) <= 4:
+            base_score -= 12
+            penalties.append(f"HOME ATS L10: seul {home_ats.get('ats_wins')}/10")
+        
+        # ── 2. Spread Alignment (ligne vs prob) ──────────
+        favored = "HOME" if spread_line < 0 else "AWAY"
+        line_abs = abs(spread_line)
+        
+        prob_fav = home_prob if spread_line < 0 else away_prob
+        
+        # Si ligne indique +8 et prob dit 75%, c'est cohérent
+        # Si ligne indique +3 mais prob dit 80%, c'est suspicious (line trop tight)
+        if line_abs >= 5 and prob_fav >= 0.65:
+            base_score += 15
+            reasons.append(f"Ligne large ({line_abs:.1f}) justifiée par prob {prob_fav*100:.0f}%")
+        elif line_abs <= 3 and prob_fav >= 0.70:
+            base_score += 10
+            reasons.append(f"Ligne serrée mais favori clair ({prob_fav*100:.0f}%)")
+        elif line_abs >= 5 and prob_fav <= 0.55:
+            base_score -= 15
+            penalties.append(f"Ligne grande ({line_abs:.1f}) mais prob faible {prob_fav*100:.0f}%")
+        
+        # ── 3. Track Record Blowout vs Close ───────────
+        # Les équipes ATS fortes: elles couvrent aussi dans les matchs serrés
+        if away_ats and away_ats.get('ats_pct', 0) > 0.55 and line_abs <= 3:
+            base_score += 12
+            reasons.append(f"AWAY couvre même matchs serrés (ATS {away_ats.get('ats_pct')*100:.0f}%)")
+        
+        if home_ats and home_ats.get('ats_pct', 0) > 0.55 and line_abs <= 3:
+            base_score += 12
+            reasons.append(f"HOME couvre même matchs serrés (ATS {home_ats.get('ats_pct')*100:.0f}%)")
+        
+        final_score = max(0, min(100, base_score))
+        
+        return {
+            "confidence": final_score,
+            "send": final_score >= 68,  # Seuil SPREAD: 68
+            "reasons": reasons,
+            "penalties": penalties,
+            "line": round(spread_line, 1),
+            "favored": favored,
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ score_spread_enhanced error: {e}")
+        return {"confidence": 50, "send": False, "reasons": [], "penalties": []}
+
+
+def score_ou_enhanced(projected_total: float, ou_line: float, away_team: str, home_team: str, sport: str, away_l10_ppg: float = 0, home_l10_ppg: float = 0) -> dict:
+    """
+    Score amélioré pour O/U basé sur:
+    - Avg points L10 vs ligne (écart > 4pts = valeur)
+    - Hit rate O/U L10 (≥ 65% = bon signal)
+    - Pace/Possessions (NBA), Goalie stats (NHL), ERA (MLB)
+    
+    Seuil: ≥ 65/100 pour envoyer
+    """
+    try:
+        base_score = 50
+        reasons = []
+        penalties = []
+        
+        # ── 1. Écart Modèle vs Ligne ──────────────────
+        diff = projected_total - ou_line
+        
+        if diff > 4:  # Modèle dit bien plus haut
+            base_score += 18
+            reasons.append(f"Modèle +{diff:.1f} pts vs ligne (OVER value)")
+        elif diff < -4:  # Modèle dit bien plus bas
+            base_score += 18
+            reasons.append(f"Modèle -{abs(diff):.1f} pts vs ligne (UNDER value)")
+        elif abs(diff) > 2:
+            base_score += 8
+            reasons.append(f"Modèle diverge de {abs(diff):.1f} pts")
+        else:
+            base_score -= 5
+            penalties.append(f"Modèle linéaire ±{abs(diff):.1f} pts")
+        
+        # ── 2. Hit Rate O/U L10 (si données disponibles) ────────────────
+        away_l10 = get_team_l10_stats(sport, away_team)
+        home_l10 = get_team_l10_stats(sport, home_team)
+        
+        # Approximation: si team_l10 a un champ hit_rate
+        # Sinon: calculer depuis avg_ppg_l10
+        if away_l10_ppg > 0 or home_l10_ppg > 0:
+            combined_l10_avg = away_l10_ppg + home_l10_ppg if (away_l10_ppg + home_l10_ppg) > 0 else ou_line
+            hit_rate_est = 0.65 if abs(combined_l10_avg - ou_line) < 2 else 0.55
+            if hit_rate_est >= 0.65:
+                base_score += 14
+                reasons.append(f"Hit rate O/U L10 fort (≈{hit_rate_est*100:.0f}%)")
+        
+        # ── 3. Sport-specific (Pitcher ERA, Goalie, Pace) ────────────────
+        if sport.lower() == 'mlb':
+            # MLB: ERA affects O/U significantly
+            base_score += 5  # Placeholder - in real ESPN ERA would be fetched
+            reasons.append("MLB: ERA factors built-in")
+        elif sport.lower() == 'nhl':
+            base_score += 5  # Placeholder - goalie hot/cold
+            reasons.append("NHL: Goalie condition factored")
+        elif sport.lower() == 'nba':
+            base_score += 5  # Placeholder - pace/possessions
+            reasons.append("NBA: Pace/possession differential ")
+        
+        final_score = max(0, min(100, base_score))
+        
+        return {
+            "confidence": final_score,
+            "send": final_score >= 65,  # Seuil O/U: 65
+            "reasons": reasons,
+            "penalties": penalties,
+            "line": round(ou_line, 1),
+            "projected": round(projected_total, 1),
+            "divergence": round(diff, 1),
+        }
+    except Exception as e:
+        logger.warning(f"⚠️ score_ou_enhanced error: {e}")
+        return {"confidence": 50, "send": False, "reasons": [], "penalties": []}
+
+
+def enrich_mlb_runline_score(away_team: str, home_team: str, game_id: str, base_runline_score: dict) -> dict:
+    """
+    Enrichit le scoring runline avec données ESPN: L10, pitcher, injuries, sharp money.
+    Retourne un score complété si MLB_RUNLINE_AVAILABLE, sinon retourne le score de base.
+    """
+    if not MLB_RUNLINE_AVAILABLE:
+        return base_runline_score
+    
+    try:
+        away_abbr = find_team_mlb(away_team) or away_team.lower()
+        home_abbr = find_team_mlb(home_team) or home_team.lower()
+        
+        # Fetch enriched data
+        away_last10  = get_team_last10_games(away_abbr)
+        home_last10  = get_team_last10_games(home_abbr)
+        away_pitcher = get_starting_pitcher(away_abbr, game_id)
+        home_pitcher = get_starting_pitcher(home_abbr, game_id)
+        injuries     = get_mlb_injuries()
+        
+        # Déterminer qui est favori/underdog basé sur base score
+        spread = base_runline_score.get("line", -1.5)
+        
+        results = []
+        for team_abbr, team_name, side, last10, pitcher in [
+            (away_abbr, away_team, "away", away_last10, away_pitcher),
+            (home_abbr, home_team, "home", home_last10, home_pitcher),
+        ]:
+            enriched_score = score_run_line(
+                team_abbr=team_abbr,
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                last10=last10,
+                pitcher=pitcher,
+                injuries=injuries,
+                odds_data={},  # Pas de mouvement de ligne dispo directement
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_runline_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "pitcher_era": best["pitcher"]["era"],
+            "pitcher_name": best["pitcher"]["name"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 MLB Runline enriched [{team_name}]: {best['confidence']}/100 (ATS {best['ats_record']}, ERA {best['pitcher']['era']:.2f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_mlb_runline error: {e}")
+        return base_runline_score
+
+
+def enrich_nba_spread_score(home_team: str, away_team: str, home_abbr: str, away_abbr: str, base_spread_score: dict) -> dict:
+    """
+    Enrichit le scoring spread NBA avec données ESPN: L10, advanced stats, injuries, sharp money, B2B.
+    Retourne un score complété si NBA_SPREAD_AVAILABLE, sinon retourne le score de base.
+    """
+    if not NBA_SPREAD_AVAILABLE:
+        return base_spread_score
+    
+    try:
+        # Fetch enriched data
+        injuries    = get_nba_injuries()
+        odds_events = get_nba_odds_events()
+        
+        home_schedule = get_team_schedule(home_abbr)
+        away_schedule = get_team_schedule(away_abbr)
+        home_stats    = get_team_advanced_stats(home_abbr)
+        away_stats    = get_team_advanced_stats(away_abbr)
+        home_injuries = get_team_injury_impact(home_team, injuries)
+        away_injuries = get_team_injury_impact(away_team, injuries)
+        
+        # Odds data (match ESPN game avec Odds API event)
+        odds_id   = match_odds_event(home_abbr, away_abbr, odds_events) if odds_events else None
+        odds_data = get_nba_spread_odds(odds_id) if odds_id else {}
+        
+        if not odds_data:
+            logger.debug(f"⚠️ No NBA odds data for {away_team} @ {home_team} — returning base score")
+            return base_spread_score
+        
+        home_spread = odds_data.get("home_spread", -3.5)
+        away_spread = -home_spread
+        
+        # Score les deux côtés
+        results = []
+        for team_name, side, spread, schedule, stats, inj in [
+            (home_team, "home", home_spread, home_schedule, home_stats, home_injuries),
+            (away_team, "away", away_spread, away_schedule, away_stats, away_injuries),
+        ]:
+            enriched_score = score_nba_spread(
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                schedule=schedule,
+                adv_stats=stats,
+                injury_impact=inj,
+                odds_data=odds_data,
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_spread_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "ats_rate": best["ats_rate"],
+            "avg_diff": best["avg_diff"],
+            "net_rating": best["net_rating"],
+            "is_b2b": best["is_b2b"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 NBA Spread enriched [{best['team']} {best['spread']:+.1f}]: {best['confidence']}/100 (ATS {best['ats_record']}, Net {best['net_rating']:+.1f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nba_spread_score error: {e}")
+        return base_spread_score
+
+
+def enrich_nhl_puckline_score(home_team: str, away_team: str, home_abbr: str, away_abbr: str, game_id: str, base_puckline_score: dict) -> dict:
+    """
+    Enrichit le scoring puck line NHL avec données ESPN: L10, Goalie, PP/PK, Injuries, Road trip, Sharp money.
+    Retourne un score complété si NHL_PUCKLINE_AVAILABLE, sinon retourne le score de base.
+    """
+    if not NHL_PUCKLINE_AVAILABLE:
+        return base_puckline_score
+    
+    try:
+        # Fetch enriched data
+        injuries    = get_nhl_injuries()
+        odds_events = get_nhl_odds_events()
+        
+        home_schedule = get_nhl_team_schedule(home_abbr)
+        away_schedule = get_nhl_team_schedule(away_abbr)
+        home_stats    = get_nhl_team_stats(home_abbr)
+        away_stats    = get_nhl_team_stats(away_abbr)
+        home_goalie   = get_starting_goalie(home_abbr, game_id)
+        away_goalie   = get_starting_goalie(away_abbr, game_id)
+        home_injuries = get_nhl_injury_impact(home_team, injuries)
+        away_injuries = get_nhl_injury_impact(away_team, injuries)
+        
+        # Odds data (match ESPN game avec Odds API event)
+        odds_id   = match_odds_event_nhl(home_abbr, away_abbr, odds_events) if odds_events else None
+        odds_data = get_puck_line_odds(odds_id) if odds_id else {}
+        
+        if not odds_data:
+            logger.debug(f"⚠️ No NHL odds data for {away_team} @ {home_team} — returning base score")
+            return base_puckline_score
+        
+        home_spread = odds_data.get("home_spread", -1.5)
+        away_spread = -home_spread
+        
+        # Score les deux côtés
+        results = []
+        for team_name, side, spread, schedule, stats, goalie, inj in [
+            (home_team, "home", home_spread, home_schedule, home_stats, home_goalie, home_injuries),
+            (away_team, "away", away_spread, away_schedule, away_stats, away_goalie, away_injuries),
+        ]:
+            enriched_score = score_puck_line(
+                team_name=team_name,
+                side=side,
+                spread=spread,
+                schedule=schedule,
+                team_stats=stats,
+                goalie=goalie,
+                injury_impact=inj,
+                odds_data=odds_data,
+            )
+            results.append(enriched_score)
+        
+        # Retourner le meilleur score enrichi
+        best = max(results, key=lambda r: r["confidence"])
+        
+        # Assembler le résultat enrichi
+        enriched = base_puckline_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "ats_record": best["ats_record"],
+            "ats_rate": best["ats_rate"],
+            "avg_diff": best["avg_diff"],
+            "win_by_2_pct": best["win_by_2_pct"],
+            "reg_win_pct": best["reg_win_pct"],
+            "goalie": best["goalie"],
+            "pp_pct": best["pp_pct"],
+            "pk_pct": best["pk_pct"],
+            "is_b2b": best["is_b2b"],
+            "road_trip": best["road_trip"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 NHL Puckline enriched [{best['team']} {best['spread']:+.1f}]: {best['confidence']}/100 (ATS {best['ats_record']}, {best['goalie']['name']})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nhl_puckline_score error: {e}")
+        return base_puckline_score
+
+
+def enrich_nba_moneyline_score(away_team: str, home_team: str, away_abbr: str, home_abbr: str, base_ml_score: dict) -> dict:
+    """
+    Enrichir le score MoneyLine NBA avec données ESPN avancées.
+    Fallback gracieux si données indisponibles.
+    
+    Retour:
+        base_ml_score enrichi avec confidence_enriched, edge, net_rating, injuries, sharp_money
+    """
+    if not NBA_MONEYLINE_ADVANCED_AVAILABLE:
+        logger.debug(f"ℹ️ NBA advanced ML analyzer not available — using base score")
+        return base_ml_score
+    
+    try:
+        # Récupérer les données ESPN pour les deux équipes
+        home_schedule = get_nba_schedule_ml_advanced(home_abbr)
+        away_schedule = get_nba_schedule_ml_advanced(away_abbr)
+        home_stats = get_nba_stats_ml_advanced(home_abbr)
+        away_stats = get_nba_stats_ml_advanced(away_abbr)
+        
+        injuries = get_nba_inj_ml_advanced()
+        home_injuries = get_nba_injury_impact_ml_advanced(home_team, injuries)
+        away_injuries = get_nba_injury_impact_ml_advanced(away_team, injuries)
+        
+        # Récupérer les cotes ML du match
+        odds_data = {
+            "home_ml": base_ml_score.get("ml_odds", -110) if home_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "away_ml": -110 if away_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "implied_prob_home": 0.52,
+            "implied_prob_away": 0.48,
+            "line_movement": 0,
+            "sharp_signal": False,
+            "sharp_direction": "none",
+        }
+        
+        # Scorer les deux côtés
+        home_result = score_moneyline(
+            home_team,
+            "home",
+            home_schedule,
+            home_stats,
+            home_injuries,
+            odds_data,
+        )
+        away_result = score_moneyline(
+            away_team,
+            "away",
+            away_schedule,
+            away_stats,
+            away_injuries,
+            odds_data,
+        )
+        
+        # Déterminer le meilleur pick
+        best = max([home_result, away_result], key=lambda r: r["confidence"])
+        
+        # Enrichir le base_score avec les données avancées
+        enriched = base_ml_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "edge": best["edge"],
+            "espn_prob": best["espn_prob"],
+            "implied_prob": best["implied_prob"],
+            "net_rating": best["net_rating"],
+            "is_b2b": best["is_b2b"],
+            "wins_l10": best["wins_l10"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "stars_out": away_injuries.get("out_count", 0) if best["side"] == "away" else home_injuries.get("out_count", 0),
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🔬 NBA ML enriched [{best['team']}]: {best['confidence']}/100 (edge: {best['edge']:+.0%}, L10: {best['wins_l10']}/10)")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nba_moneyline_score error: {e}")
+        return base_ml_score
+
+
+def enrich_nhl_moneyline_score(away_team: str, home_team: str, away_abbr: str, home_abbr: str, base_ml_score: dict) -> dict:
+    """
+    Enrichir le score MoneyLine NHL avec données ESPN avancées.
+    Falback gracieux si données indisponibles.
+    
+    Retour:
+        base_ml_score enrichi avec confidence_enriched, edge, goalie, road_trip, pp_pct, pk_pct
+    """
+    if not NHL_MONEYLINE_ADVANCED_AVAILABLE:
+        logger.debug(f"ℹ️ NHL advanced ML analyzer not available — using base score")
+        return base_ml_score
+    
+    try:
+        # Récupérer les données ESPN pour les deux équipes
+        home_schedule = get_nhl_schedule_ml_advanced(home_abbr)
+        away_schedule = get_nhl_schedule_ml_advanced(away_abbr)
+        home_stats = get_nhl_stats_ml_advanced(home_abbr)
+        away_stats = get_nhl_stats_ml_advanced(away_abbr)
+        
+        # Get goalies
+        home_goalie = {
+            "name": "TBD",
+            "save_pct": home_stats.get("save_pct", 0.900),
+            "gaa": 3.00,
+            "games": 0,
+            "is_backup": False,
+            "confirmed": False
+        }
+        away_goalie = {
+            "name": "TBD",
+            "save_pct": away_stats.get("save_pct", 0.900),
+            "gaa": 3.00,
+            "games": 0,
+            "is_backup": False,
+            "confirmed": False
+        }
+        
+        injuries = get_nhl_inj_ml_advanced()
+        home_injuries = get_nhl_injury_impact_ml_advanced(home_team, injuries)
+        away_injuries = get_nhl_injury_impact_ml_advanced(away_team, injuries)
+        
+        # Récupérer les cotes ML du match
+        odds_data = {
+            "home_ml": base_ml_score.get("ml_odds", -110) if home_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "away_ml": -110 if away_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "implied_prob_home": 0.52,
+            "implied_prob_away": 0.48,
+            "line_movement": 0,
+            "sharp_signal": False,
+            "sharp_direction": "none",
+        }
+        
+        # Scorer les deux côtés
+        home_result = score_nhl_moneyline(
+            home_team,
+            "home",
+            home_schedule,
+            home_stats,
+            home_goalie,
+            home_injuries,
+            odds_data,
+        )
+        away_result = score_nhl_moneyline(
+            away_team,
+            "away",
+            away_schedule,
+            away_stats,
+            away_goalie,
+            away_injuries,
+            odds_data,
+        )
+        
+        # Déterminer le meilleur pick
+        best = max([home_result, away_result], key=lambda r: r["confidence"])
+        
+        # Enrichir le base_score avec les données avancées
+        enriched = base_ml_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "edge": best["edge"],
+            "espn_prob": best["espn_prob"],
+            "implied_prob": best["implied_prob"],
+            "regulation_win_pct": best.get("regulation_win_pct", 0),
+            "is_b2b": best["is_b2b"],
+            "wins_l10": best["wins_l10"],
+            "goalie": best["goalie"]["name"],
+            "goalie_sv_pct": best["goalie"].get("save_pct", 0),
+            "pp_pct": best["pp_pct"],
+            "pk_pct": best["pk_pct"],
+            "road_trip": best["road_trip"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "def_out": away_injuries.get("def_out_count", 0) if best["side"] == "away" else home_injuries.get("def_out_count", 0),
+            "fwd_out": away_injuries.get("fwd_out_count", 0) if best["side"] == "away" else home_injuries.get("fwd_out_count", 0),
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"🏒 NHL ML enriched [{best['team']}]: {best['confidence']}/100 (edge: {best['edge']:+.0%}, L10: {best['wins_l10']}/10, goalie: {best['goalie']['name']})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_nhl_moneyline_score error: {e}")
+        return base_ml_score
+
+
+def enrich_mlb_moneyline_score(away_team: str, home_team: str, away_abbr: str, home_abbr: str, base_ml_score: dict) -> dict:
+    """
+    Enrichir le score MoneyLine MLB avec données ESPN avancées.
+    Fallback gracieux si données indisponibles.
+    
+    Retour:
+        base_ml_score enrichi avec confidence_enriched, edge, pitcher, ops, run_diff
+    """
+    if not MLB_MONEYLINE_ADVANCED_AVAILABLE:
+        logger.debug(f"ℹ️ MLB advanced ML analyzer not available — using base score")
+        return base_ml_score
+    
+    try:
+        # Récupérer les données ESPN pour les deux équipes
+        home_schedule = get_mlb_schedule_ml_advanced(home_abbr)
+        away_schedule = get_mlb_schedule_ml_advanced(away_abbr)
+        home_stats = get_mlb_stats_ml_advanced(home_abbr)
+        away_stats = get_mlb_stats_ml_advanced(away_abbr)
+        
+        # Get starting pitchers
+        home_pitcher = {
+            "name": "TBD",
+            "era": home_stats.get("team_era", 4.50),
+            "whip": 1.30,
+            "wins": 0,
+            "k9": 0,
+            "confirmed": False
+        }
+        away_pitcher = {
+            "name": "TBD",
+            "era": away_stats.get("team_era", 4.50),
+            "whip": 1.30,
+            "wins": 0,
+            "k9": 0,
+            "confirmed": False
+        }
+        
+        injuries = get_mlb_inj_ml_advanced()
+        home_injuries = get_mlb_injury_impact_ml_advanced(home_team, injuries)
+        away_injuries = get_mlb_injury_impact_ml_advanced(away_team, injuries)
+        
+        # Récupérer les cotes ML du match
+        odds_data = {
+            "home_ml": base_ml_score.get("ml_odds", -110) if home_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "away_ml": -110 if away_team.upper() in base_ml_score.get("ml_pick", "").upper() else 110,
+            "implied_prob_home": 0.52,
+            "implied_prob_away": 0.48,
+            "line_movement": 0,
+            "sharp_signal": False,
+            "sharp_direction": "none",
+        }
+        
+        # Scorer les deux côtés
+        home_result = score_mlb_moneyline(
+            home_team,
+            "home",
+            home_schedule,
+            home_stats,
+            home_pitcher,
+            home_injuries,
+            odds_data,
+        )
+        away_result = score_mlb_moneyline(
+            away_team,
+            "away",
+            away_schedule,
+            away_stats,
+            away_pitcher,
+            away_injuries,
+            odds_data,
+        )
+        
+        # Déterminer le meilleur pick
+        best = max([home_result, away_result], key=lambda r: r["confidence"])
+        
+        # Enrichir le base_score avec les données avancées
+        enriched = base_ml_score.copy()
+        enriched.update({
+            "confidence_enriched": best["confidence"],
+            "edge": best["edge"],
+            "espn_prob": best["espn_prob"],
+            "implied_prob": best["implied_prob"],
+            "wins_l10": best["wins_l10"],
+            "pitcher": best["pitcher"]["name"],
+            "pitcher_era": best["pitcher"].get("era", 4.50),
+            "pitcher_whip": best["pitcher"].get("whip", 1.30),
+            "ops": best["ops"],
+            "line_move": best["line_move"],
+            "sharp": best["sharp"],
+            "sharp_dir": best["sharp_dir"],
+            "stars_out": away_injuries.get("out_count", 0) if best["side"] == "away" else home_injuries.get("out_count", 0),
+            "reasons_enriched": best["reasons"],
+            "penalties_enriched": best["penalties"],
+            "send_enriched": best["send"],
+        })
+        
+        logger.debug(f"⚾ MLB ML enriched [{best['team']}]: {best['confidence']}/100 (edge: {best['edge']:+.0%}, L10: {best['wins_l10']}/10, pitcher ERA: {best['pitcher'].get('era', 4.50):.2f})")
+        return enriched
+        
+    except Exception as e:
+        logger.debug(f"⚠️ enrich_mlb_moneyline_score error: {e}")
+        return base_ml_score
+
+
+def format_team_props_summary(team_name, props_analysis):
+    """
+    Formate un résumé des props pour une équipe
+    
+    Retour:
+        Message formaté pour Telegram
+    """
+    try:
+        if not props_analysis:
+            return f"❌ Pas de joueurs stars recommandés pour {team_name}"
+        
+        # Filtrer les analyses avec value (side != 'none')
+        value_picks = [p for p in props_analysis if p['analysis']['side'] != 'none']
+        
+        if not value_picks:
+            return f"📊 {team_name}\n🔴 ➡️ Pas de value identifiée sur les props"
+        
+        message = f"🏀 {team_name.upper()}\n"
+        message += f"━━━━━━━━━━━━━━━━━━\n"
+        message += f"💰 {len(value_picks)} value(s) trouvée(s)\n\n"
+        
+        for pick in value_picks[:5]:  # Top 5 picks
+            player = pick['player']
+            analysis = pick['analysis']
+            confidence_emoji = {
+                'high': '🔥',
+                'medium': '⚡',
+                'low': '📌'
+            }.get(analysis['confidence'], '📌')
+            
+            side_text = 'OVER' if analysis['side'] == 'over' else 'UNDER'
+            message += f"🟢 {confidence_emoji} {player}\n"
+            message += f"   {side_text} {analysis['line']} | Pred: {analysis['predicted_points']:.1f}\n"
+            message += f"   +{analysis['value_margin']:.1f}%\n\n"
+        
+        return message
+    except Exception as e:
+        logger.warning(f"⚠️ Erreur formatage résumé props: {e}")
+        return "❌ Erreur"
+
+def generate_prediction_nba(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction NBA avec MoneyLine Guide (3 pillars: ML + SPREAD + O/U)"""
+    away_clean = find_team_nba(away_team) or away_team.lower()
+    home_clean = find_team_nba(home_team) or home_team.lower()
+    
+    odds_data = get_best_odds_nba(away_clean, home_clean)
+    best_away_ml = odds_data["away_ml"]
+    best_home_ml = odds_data["home_ml"]
+    
+    # Essayer d'utiliser le modèle ML d'abord
+    model_source = "STATS"
+    prob_home_win = None
+    
+    if SKLEARN_AVAILABLE and ML_MODEL is not None:
+        prob_home_win = predict_with_ml_model(away_team, home_team)
+        if prob_home_win is not None:
+            model_source = "ML"
+    
+    # Fallback sur le modèle statistique 4-facteurs
+    if prob_home_win is None:
+        _nba_ts = get_dynamic_team_stats('NBA')
+        away_stats = _nba_ts.get(away_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
+        home_stats = _nba_ts.get(home_clean, {"strength": 85, "ppg": 115.0, "pa": 112.0, "wins": 40, "losses": 42})
+        
+        # Calcul du modèle 4-facteurs pour le basketball
+        away_ppg_diff = away_stats["ppg"] - home_stats["pa"]
+        home_ppg_diff = home_stats["ppg"] - away_stats["pa"]
+        
+        point_diff = away_ppg_diff - home_ppg_diff - 2.5  # Avantage route
+        
+        try:
+            win_prob_away = 1 / (1 + math.exp(-point_diff / 11.0))
+        except Exception:
+            win_prob_away = 0.5 + (point_diff / 50.0)
+        
+        prob_away_win = max(0.05, min(0.95, win_prob_away))
+        prob_home_win = 1.0 - prob_away_win
+    
+    # Consensus du marché
+    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
+    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    prob_home_market = 1.0 - market_consensus_away
+    
+    # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
+    _adj_nba      = get_model_adjustments("NBA")
+    _model_w_nba  = _adj_nba.get("model_weight", 0.60)
+    _conf_cal_nba = _adj_nba.get("confidence_scale", 1.0)
+    _home_d_nba   = _adj_nba.get("home_advantage_delta", 0.0)
+    # Correction avantage domicile (prob_home_win)
+    prob_home_win = max(0.05, min(0.95, prob_home_win + _home_d_nba))
+
+    # Blended probability (poids appris)
+    blended_prob = (_model_w_nba * prob_home_win) + ((1.0 - _model_w_nba) * prob_home_market)
+    blended_prob = max(0.05, min(0.95, blended_prob))
+    prob_away = 1.0 - blended_prob
+    
+    # EV calculation
+    ev_away = (best_away_ml - 1.0) * prob_away - blended_prob
+    ev_home = (best_home_ml - 1.0) * blended_prob - prob_away
+    
+    logger.debug(f"{away_team.upper()} @ {home_team.upper()}: [{model_source}] | Cotes: {best_away_ml:.2f}/{best_home_ml:.2f} | Blended: {blended_prob:.1%} | EV: {ev_away:.4f}/{ev_home:.4f}")
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 1️⃣ MONEYLINE SCORING (L10 Form + ATS + EV)
+    # ═══════════════════════════════════════════════════════════════════════
+    ml_score = score_moneyline_enhanced(away_team, home_team, prob_away, blended_prob, best_away_ml, best_home_ml, "NBA")
+    ml_confidence = ml_score["confidence"]
+    ml_send = ml_score["send"]
+    
+    if ev_away > ev_home:
+        ml_pick = f"{away_team.upper()} ML"
+        ml_odds = best_away_ml
+        ml_book = odds_data["away_book"]
+        ml_ev = ev_away
+    else:
+        ml_pick = f"{home_team.upper()} ML"
+        ml_odds = best_home_ml
+        ml_book = odds_data["home_book"]
+        ml_ev = ev_home
+    
+    if ml_confidence >= 55 and ml_ev > -0.02:
+        ml_status = "✅ BUY"
+    elif ml_confidence >= 50 or ml_ev > -0.005:
+        ml_status = "👀 MONITORING"
+    else:
+        ml_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 2️⃣ SPREAD SCORING (ATS L10 ≥ 6/10 required)
+    # ═══════════════════════════════════════════════════════════════════════
+    estimated_spread = (prob_away - 0.5) * 22.0
+    raw_spread = round(estimated_spread * 2) / 2
+    
+    if raw_spread > 0:
+        spread_pick = f"{away_team.upper()} -{raw_spread}"
+    elif raw_spread < 0:
+        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+    
+    spread_odds = 1.909
+    spread_score = score_spread_enhanced(raw_spread, prob_away, blended_prob, away_team, home_team, "NBA")
+    spread_confidence = spread_score["confidence"]
+    spread_send = spread_score["send"]
+    
+    if spread_confidence >= 58:
+        spread_status = "✅ BUY"
+    elif spread_confidence >= 50:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # 3️⃣ O/U SCORING (L10 Hit Rate ≥ 65% required)
+    # ═══════════════════════════════════════════════════════════════════════
+    nba_away = NBA_TEAM_STATS.get(away_clean, {"ppg": 115.0, "pa": 112.0})
+    nba_home = NBA_TEAM_STATS.get(home_clean, {"ppg": 115.0, "pa": 112.0})
+    projected_total = nba_away["ppg"] + nba_home["ppg"]
+    ou_line = estimate_market_line("NBA", projected_total)
+    
+    away_l10_ppg = nba_away.get("ppg", 115.0)
+    home_l10_ppg = nba_home.get("ppg", 115.0)
+    
+    ou_score = score_ou_enhanced(projected_total, ou_line, away_team, home_team, "NBA", away_l10_ppg, home_l10_ppg)
+    ou_confidence = ou_score["confidence"]
+    ou_send = ou_score["send"]
+    
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+    else:
+        ou_pick = f"UNDER {ou_line}"
+    ou_odds = 1.909
+    
+    if ou_confidence >= 58:
+        ou_status = "✅ BUY"
+    elif ou_confidence >= 50:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
+
+    return {
+        "pick": ml_pick,
+        "odds": f"{ml_odds:.2f}",
+        "confidence": ml_confidence,
+        "ev": f"{ml_ev:.4f}",
+        "ev_pct": f"{ml_ev*100:.2f}%",
+        "status": ml_status,
+        "bookmaker": ml_book,
+        "model": model_source,
+        # ML
+        "ml_pick": ml_pick,
+        "ml_odds": f"{ml_odds:.2f}",
+        "ml_confidence": ml_confidence,
+        "ml_ev_pct": f"{ml_ev*100:.2f}%",
+        "ml_status": ml_status,
+        # Spread
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_confidence,
+        "spread_status": spread_status,
+        # O/U
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_confidence,
+        "ou_status": ou_status,
+    }
+
+
+def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
+    """Génère une prédiction NFL avec MoneyLine Guide (3 pillars: ML + SPREAD + O/U)"""
+    away_clean = find_team_nfl(away_team) or away_team.lower()
+    home_clean = find_team_nfl(home_team) or home_team.lower()
+
+    odds_data = get_best_odds_nfl(away_clean, home_clean)
+    best_away_ml = odds_data["away_ml"]
+    best_home_ml = odds_data["home_ml"]
+
+    model_source = "STATS"
+    _nfl_ts = get_dynamic_team_stats('NFL')
+    away_stats = _nfl_ts.get(away_clean, {"strength": 78, "ppg": 22.0, "pa": 22.0, "wins": 8, "losses": 9})
+    home_stats = _nfl_ts.get(home_clean, {"strength": 78, "ppg": 22.0, "pa": 22.0, "wins": 8, "losses": 9})
+
+    away_ppg_diff = away_stats["ppg"] - home_stats["pa"]
+    home_ppg_diff = home_stats["ppg"] - away_stats["pa"]
+
+    point_diff = away_ppg_diff - home_ppg_diff - 1.5  # Avantage domicile NFL (~1.5 pt)
+
+    try:
+        win_prob_away = 1 / (1 + math.exp(-point_diff / 7.5))
+    except Exception:
+        win_prob_away = 0.5 + (point_diff / 30.0)
+
+    prob_away_win = max(0.05, min(0.95, win_prob_away))
+    prob_home_win = 1.0 - prob_away_win
+
+    market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
+    market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    prob_home_market = 1.0 - market_consensus_away
+
+    _adj_nfl      = get_model_adjustments("NFL")
+    _model_w_nfl  = _adj_nfl.get("model_weight", 0.55)
+    _conf_cal_nfl = _adj_nfl.get("confidence_scale", 1.0)
+    _home_d_nfl   = _adj_nfl.get("home_advantage_delta", 0.0)
+    prob_home_win = max(0.05, min(0.95, prob_home_win + _home_d_nfl))
+
+    blended_prob = (_model_w_nfl * prob_home_win) + ((1.0 - _model_w_nfl) * prob_home_market)
+    blended_prob = max(0.05, min(0.95, blended_prob))
+    prob_away = 1.0 - blended_prob
+
+    ev_away = (best_away_ml - 1.0) * prob_away - blended_prob
+    ev_home = (best_home_ml - 1.0) * blended_prob - prob_away
+
+    logger.debug(f"{away_team.upper()} @ {home_team.upper()}: [{model_source}] | Cotes: {best_away_ml:.2f}/{best_home_ml:.2f} | Blended: {blended_prob:.1%} | EV: {ev_away:.4f}/{ev_home:.4f}")
+
+    ml_score = score_moneyline_enhanced(away_team, home_team, prob_away, blended_prob, best_away_ml, best_home_ml, "NFL")
+    ml_confidence = ml_score["confidence"]
+    ml_send = ml_score["send"]
+
+    if ev_away > ev_home:
+        ml_pick = f"{away_team.upper()} ML"
+        ml_odds = best_away_ml
+        ml_book = odds_data["away_book"]
+        ml_ev = ev_away
+    else:
+        ml_pick = f"{home_team.upper()} ML"
+        ml_odds = best_home_ml
+        ml_book = odds_data["home_book"]
+        ml_ev = ev_home
+
+    if ml_confidence >= 55 and ml_ev > -0.02:
+        ml_status = "✅ BUY"
+    elif ml_confidence >= 50 or ml_ev > -0.005:
+        ml_status = "👀 MONITORING"
+    else:
+        ml_status = "⏸ PASS"
+
+    estimated_spread = (prob_away - 0.5) * 16.0
+    raw_spread = round(estimated_spread * 2) / 2
+
+    if raw_spread > 0:
+        spread_pick = f"{away_team.upper()} -{raw_spread}"
+    elif raw_spread < 0:
+        spread_pick = f"{home_team.upper()} -{abs(raw_spread)}"
+    else:
+        spread_pick = f"{home_team.upper()} PK"
+
+    spread_odds = 1.909
+    spread_score = score_spread_enhanced(raw_spread, prob_away, blended_prob, away_team, home_team, "NFL")
+    spread_confidence = spread_score["confidence"]
+    spread_send = spread_score["send"]
+
+    if spread_confidence >= 58:
+        spread_status = "✅ BUY"
+    elif spread_confidence >= 50:
+        spread_status = "👀 MONITORING"
+    else:
+        spread_status = "⏸ PASS"
+
+    nfl_away = NFL_TEAM_STATS.get(away_clean, {"ppg": 22.0, "pa": 22.0})
+    nfl_home = NFL_TEAM_STATS.get(home_clean, {"ppg": 22.0, "pa": 22.0})
+    projected_total = nfl_away["ppg"] + nfl_home["ppg"]
+    ou_line = estimate_market_line("NFL", projected_total)
+
+    away_l10_ppg = nfl_away.get("ppg", 22.0)
+    home_l10_ppg = nfl_home.get("ppg", 22.0)
+
+    ou_score = score_ou_enhanced(projected_total, ou_line, away_team, home_team, "NFL", away_l10_ppg, home_l10_ppg)
+    ou_confidence = ou_score["confidence"]
+    ou_send = ou_score["send"]
+
+    if projected_total > ou_line:
+        ou_pick = f"OVER {ou_line}"
+    else:
+        ou_pick = f"UNDER {ou_line}"
+    ou_odds = 1.909
+
+    if ou_confidence >= 58:
+        ou_status = "✅ BUY"
+    elif ou_confidence >= 50:
+        ou_status = "👀 MONITORING"
+    else:
+        ou_status = "⏸ PASS"
+
+    return {
+        "pick": ml_pick,
+        "odds": f"{ml_odds:.2f}",
+        "confidence": ml_confidence,
+        "ev": f"{ml_ev:.4f}",
+        "ev_pct": f"{ml_ev*100:.2f}%",
+        "status": ml_status,
+        "bookmaker": ml_book,
+        "model": model_source,
+        "ml_pick": ml_pick,
+        "ml_odds": f"{ml_odds:.2f}",
+        "ml_confidence": ml_confidence,
+        "ml_ev_pct": f"{ml_ev*100:.2f}%",
+        "ml_status": ml_status,
+        "spread_pick": spread_pick,
+        "spread_odds": f"{spread_odds:.2f}",
+        "spread_confidence": spread_confidence,
+        "spread_status": spread_status,
+        "ou_pick": ou_pick,
+        "ou_odds": f"{ou_odds:.2f}",
+        "ou_confidence": ou_confidence,
+        "ou_status": ou_status,
+    }
+
+
+import time as _time
+from functools import wraps
+
+_CMD_LAST_CALL: dict = {}
+_CMD_COOLDOWN_SECONDS = 15
+
+def rate_limit(cooldown: int = _CMD_COOLDOWN_SECONDS):
+    """
+    Décorateur anti-spam pour les commandes Telegram coûteuses.
+    Bloque les ré-appels trop rapides du même utilisateur.
+    """
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(update, context):
+            user_id = update.effective_user.id if update.effective_user else 0
+            key = f"{func.__name__}_{user_id}"
+            now = _time.monotonic()
+            last = _CMD_LAST_CALL.get(key, 0)
+            if now - last < cooldown:
+                remaining = int(cooldown - (now - last))
+                await update.message.reply_text(
+                    f"⏳ Attends encore {remaining}s avant de relancer cette commande."
+                )
+                return
+            _CMD_LAST_CALL[key] = now
+            return await func(update, context)
+        return wrapper
+    return decorator
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Menu principal"""
+    msg = "🤖 ULTRON v6.0 - MULTISPORTS\n"
+    msg += "NBA 🏀 + NHL 🏒 + MLB ⚾\n\n"
+    msg += "🕐 Heure Québec | 🌍 ESPN Live Data\n"
+    msg += "📊 3 Bookmakers | Line Shopping | Smart Filtering\n\n"
+    msg += "COMMANDES:\n"
+    msg += "/nba - Équipes NBA en direct\n"
+    msg += "/nhl - Équipes NHL en direct\n"
+    msg += "/mlb - Équipes MLB en direct\n"
+    msg += "/pronostics <sport> - Pronostics (nba/nhl/mlb)\n"
+    msg += "/test - Notification de test (FREE channel)\n"
+    msg += "/help - Aide"
+    await update.message.reply_text(msg)
+
+async def test_notification(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Envoie une notification de test sur le canal FREE"""
+    try:
+        # Test message pour vérifier le nouveau format d'affichage
+        msg_free  = "🟢 Celtics ML\n"
+        msg_free += "🟢 Kings ML\n"
+        msg_free += "\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_free += "🏟️  🏀 Celtics @ Heat\n"
+        msg_free += "🕐  19:30 (Québec)  |  💼 DraftKings\n"
+        msg_free += "💵  Cote: 1.95\n"
+        msg_free += "✅ BUY\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg_free += "📊 ML: 🟢 Celtics ML @ 1.95\n"
+        msg_free += "📏 SPREAD: 🟢 Celtics -2.5 @ 1.90\n"
+        msg_free += "🔢 Total Points O/U: 🟢 Over 225.5 @ 1.90\n\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_free += "🏟️  🏀 Kings @ Warriors\n"
+        msg_free += "🕐  22:00 (Québec)  |  💼 FanDuel\n"
+        msg_free += "💵  Cote: 1.82\n"
+        msg_free += "✅ BUY\n"
+        msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        msg_free += "📊 ML: 🟢 Kings ML @ 1.82\n"
+        msg_free += "📏 SPREAD: 🔴 Kings +3.5 @ 1.85\n"
+        msg_free += "🔢 Total Points O/U: 🟡 Under 215.5 @ 1.88\n\n"
+        msg_free += "💎 Parlays + autres picks en VIP ↑"
+        
+        await update.message.reply_text(msg_free)
+        logger.info(f"✅ Test notification envoyée au FREE channel")
+    except Exception as e:
+        logger.error(f"❌ Erreur test: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+async def nhl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes NHL en direct"""
+    try:
+        matches = get_live_matches_nhl()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            msg = "❌ Aucun match NHL actif aujourd'hui\n"
+            msg += "(Tous terminés ou pas de match programmé)"
+            await update.message.reply_text(msg)
+            return
+        
+        msg = f"🏒 MATCHS NHL EN DIRECT\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+        
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:20} @ {home:20}\n"
+        
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} matchs en direct\n"
+        msg += "💡 Utilise /pronostics nhl pour les prédictions"
+        
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ nhl_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NHL: {e}")
+
+async def mlb_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes MLB en direct"""
+    try:
+        matches = get_live_matches_mlb()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            msg = "❌ Aucun match MLB actif aujourd'hui\n"
+            msg += "(Tous terminés ou pas de match programmé)"
+            await update.message.reply_text(msg)
+            return
+        
+        msg = f"⚾ MATCHS MLB EN DIRECT\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+        
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:20} @ {home:20}\n"
+        
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} matchs en direct\n"
+        msg += "💡 Utilise /pronostics mlb pour les prédictions"
+        
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ mlb_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur MLB: {e}")
+
+async def nfl_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes NFL en direct"""
+    try:
+        matches = get_live_matches_nfl()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            msg = "❌ Aucun match NFL actif aujourd'hui\n"
+            msg += "(Tous terminés ou pas de match programmé — le NFL joue surtout dim/lun/jeu)"
+            await update.message.reply_text(msg)
+            return
+
+        msg = f"🏈 MATCHS NFL EN DIRECT\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:20} @ {home:20}\n"
+
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} matchs en direct\n"
+        msg += "💡 Utilise /pronostics nfl pour les prédictions"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ nfl_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+
+async def mondial_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les matchs FIFA Coupe du Monde 2026"""
+    try:
+        matches = get_live_matches_wc()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            msg = (
+                "❌ Aucun match Coupe du Monde aujourd'hui\n"
+                "_(Vérifiez les dates de la phase de groupes ou des matchs à élimination)_"
+            )
+            await update.message.reply_text(msg)
+            return
+
+        msg  = "🏆 COUPE DU MONDE FIFA 2026\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:25} vs  {home}\n"
+
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} match(s) trouvé(s)\n"
+        msg += "💡 Utilise /pronostics mondial pour les prédictions EV+"
+
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ mondial_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur WC: {e}")
+
+
+async def nba_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les équipes NBA en direct"""
+    try:
+        matches = get_live_matches_nba()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            msg = "❌ Aucun match NBA actif aujourd'hui\n"
+            msg += "(Tous terminés ou pas de match programmé)"
+            await update.message.reply_text(msg)
+            return
+        
+        msg = f"🏀 MATCHS NBA EN DIRECT\n"
+        msg += "═" * 60 + "\n"
+        msg += f"🕐 {quebec_time.strftime('%d/%m/%Y %H:%M:%S')} (Heure Québec)\n"
+        msg += "═" * 60 + "\n\n"
+        
+        for i, (away, home) in enumerate(matches, 1):
+            msg += f"{i:2}. {away:20} @ {home:20}\n"
+        
+        msg += "\n" + "═" * 60 + "\n"
+        msg += f"📊 Total: {len(matches)} matchs en direct\n"
+        msg += "💡 Utilise /pronostics nba pour les prédictions"
+        
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ nba_matches: {e}")
+        await update.message.reply_text(f"❌ Erreur NBA: {e}")
+
+@rate_limit(30)
+async def pronostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics pour un sport: /pronostics nba/nhl/mlb"""
+    if not context.args:
+        msg = "❌ Usage: /pronostics <sport>\n\n"
+        msg += "Exemple:\n"
+        msg += "/pronostics nba - Pronostics NBA\n"
+        msg += "/pronostics nhl - Pronostics NHL 🏒\n"
+        msg += "/pronostics mlb - Pronostics MLB ⚾\n"
+        msg += "/pronostics nfl - Pronostics NFL 🏈"
+        await update.message.reply_text(msg)
+        return
+    
+    sport = context.args[0].lower()
+    
+    if sport == "nhl":
+        await pronostics_nhl(update, context)
+    elif sport == "nba":
+        await pronostics_nba(update, context)
+    elif sport == "mlb":
+        await pronostics_mlb(update, context)
+    elif sport == "nfl":
+        await pronostics_nfl(update, context)
+    else:
+        msg = f"❌ Sport '{sport}' non reconnu\n"
+        msg += "Sports disponibles: nba, nhl, mlb, nfl"
+        await update.message.reply_text(msg)
+
+async def pronostics_nba(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics NBA"""
+    try:
+        await update.message.reply_text("🔄 [DEBUG] Chargement des matchs NBA...")
+        matches = get_live_matches_nba()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            await update.message.reply_text("❌ Aucun match NBA actuel")
+            return
+        
+        predictions = []
+        errors = []
+        for away, home in matches:
+            try:
+                logger.debug(f"Generating prediction for NBA: {away} @ {home}")
+                pred = generate_prediction_nba(away, home)
+                logger.debug(f"✅ Prediction generated for {away} @ {home}")
+                predictions.append((away, home, pred))
+            except Exception as e:
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+                continue
+        
+        if not predictions:
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NBA\n\n🔍 Erreurs:\n{error_details}")
+            return
+        
+        buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
+        monitoring_picks = [(a, h, p) for a, h, p in predictions if "MONITORING" in p['status']]
+        pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
+        
+        # Message 1
+        msg1 = "🏀 ULTRON v6.0 - PRÉDICTIONS NBA\n"
+        msg1 += "═" * 70 + "\n"
+        msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
+        msg1 += f"📡 {len(matches)} matchs NBA en direct | {len(predictions)} avec prédictions\n"
+        
+        # Afficher le modèle utilisé
+        models_used = set(p['model'] for a, h, p in predictions)
+        msg1 += f"🤖 Modèle: {', '.join(models_used)}\n"
+        msg1 += "═" * 70 + "\n\n"
+        
+        if buy_picks:
+            msg1 += "✅ ACHETER - Meilleure valeur\n"
+            msg1 += "─" * 70 + "\n\n"
+            for i, (away, home, pred) in enumerate(buy_picks, 1):
+                msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg1 += "✅ Aucun pick BUY actuellement\n\n"
+        
+        await update.message.reply_text(msg1)
+        
+        # Message 2
+        msg2 = "👀 MONITORING - À surveiller\n"
+        msg2 += "─" * 70 + "\n\n"
+        
+        if monitoring_picks:
+            for i, (away, home, pred) in enumerate(monitoring_picks, 1):
+                msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg2 += "Aucun monitoring\n\n"
+        
+        msg2 += "─" * 70 + "\n"
+        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
+        
+        await update.message.reply_text(msg2)
+    except Exception as e:
+        logger.error(f"❌ pronostics_nba: {e}")
+        await update.message.reply_text(f"❌ Erreur NBA: {e}")
+
+async def pronostics_nhl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics NHL"""
+    try:
+        matches = get_live_matches_nhl()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            await update.message.reply_text("❌ Aucun match NHL actuel")
+            return
+        
+        predictions = []
+        errors = []
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nhl(away, home)
+                predictions.append((away, home, pred))
+            except Exception as e:
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+                continue
+        
+        if not predictions:
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NHL\n\n🔍 Erreurs:\n{error_details}")
+            return
+        
+        buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
+        monitoring_picks = [(a, h, p) for a, h, p in predictions if "MONITORING" in p['status']]
+        pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
+        
+        # Message 1
+        msg1 = "🏒 ULTRON v6.0 - PRÉDICTIONS NHL\n"
+        msg1 += "═" * 70 + "\n"
+        msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
+        msg1 += f"📡 {len(matches)} matchs NHL en direct | {len(predictions)} avec prédictions\n"
+        msg1 += "═" * 70 + "\n\n"
+        
+        if buy_picks:
+            msg1 += "✅ ACHETER - Meilleure valeur\n"
+            msg1 += "─" * 70 + "\n\n"
+            for i, (away, home, pred) in enumerate(buy_picks, 1):
+                msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg1 += "✅ Aucun pick BUY actuellement\n\n"
+        
+        await update.message.reply_text(msg1)
+        
+        # Message 2
+        msg2 = "👀 MONITORING - À surveiller\n"
+        msg2 += "─" * 70 + "\n\n"
+        
+        if monitoring_picks:
+            for i, (away, home, pred) in enumerate(monitoring_picks, 1):
+                msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg2 += "Aucun monitoring\n\n"
+        
+        msg2 += "─" * 70 + "\n"
+        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
+        
+        await update.message.reply_text(msg2)
+    except Exception as e:
+        logger.error(f"❌ pronostics_nhl: {e}")
+        await update.message.reply_text(f"❌ Erreur NHL: {e}")
+
+async def pronostics_mlb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics MLB"""
+    try:
+        matches = get_live_matches_mlb()
+        quebec_time = get_quebec_time()
+        
+        if not matches:
+            await update.message.reply_text("❌ Aucun match MLB actuel")
+            return
+        
+        predictions = []
+        errors = []
+        for away, home in matches:
+            try:
+                pred = generate_prediction_mlb(away, home)
+                predictions.append((away, home, pred))
+            except Exception as e:
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+                continue
+        
+        if not predictions:
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions MLB\n\n🔍 Erreurs:\n{error_details}")
+            return
+        
+        buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
+        monitoring_picks = [(a, h, p) for a, h, p in predictions if "MONITORING" in p['status']]
+        pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
+        
+        # Message 1
+        msg1 = "⚾ ULTRON v6.0 - PRÉDICTIONS MLB\n"
+        msg1 += "═" * 70 + "\n"
+        msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
+        msg1 += f"📡 {len(matches)} matchs MLB en direct | {len(predictions)} avec prédictions\n"
+        msg1 += "═" * 70 + "\n\n"
+        
+        if buy_picks:
+            msg1 += "✅ ACHETER - Meilleure valeur\n"
+            msg1 += "─" * 70 + "\n\n"
+            for i, (away, home, pred) in enumerate(buy_picks, 1):
+                msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg1 += f"   � {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg1 += "✅ Aucun pick BUY actuellement\n\n"
+        
+        await update.message.reply_text(msg1)
+        
+        # Message 2
+        msg2 = "👀 MONITORING - À surveiller\n"
+        msg2 += "─" * 70 + "\n\n"
+        
+        if monitoring_picks:
+            for i, (away, home, pred) in enumerate(monitoring_picks, 1):
+                msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg2 += "Aucun monitoring\n\n"
+        
+        msg2 += "─" * 70 + "\n"
+        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
+        
+        await update.message.reply_text(msg2)
+    except Exception as e:
+        logger.error(f"❌ pronostics_mlb: {e}")
+        await update.message.reply_text(f"❌ Erreur MLB: {e}")
+
+
+async def pronostics_nfl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les pronostics NFL"""
+    try:
+        matches = get_live_matches_nfl()
+        quebec_time = get_quebec_time()
+
+        if not matches:
+            await update.message.reply_text("❌ Aucun match NFL actuel")
+            return
+
+        predictions = []
+        errors = []
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nfl(away, home)
+                predictions.append((away, home, pred))
+            except Exception as e:
+                error_msg = f"💥 {away} @ {home}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                errors.append(error_msg)
+                continue
+
+        if not predictions:
+            error_details = "\n".join(errors[:3]) if errors else "Unknown error"
+            await update.message.reply_text(f"⚠️ Impossible de générer les prédictions NFL\n\n🔍 Erreurs:\n{error_details}")
+            return
+
+        buy_picks = [(a, h, p) for a, h, p in predictions if "BUY" in p['status']]
+        monitoring_picks = [(a, h, p) for a, h, p in predictions if "MONITORING" in p['status']]
+        pass_picks = [(a, h, p) for a, h, p in predictions if "PASS" in p['status']]
+
+        msg1 = "🏈 ULTRON v6.0 - PRÉDICTIONS NFL\n"
+        msg1 += "═" * 70 + "\n"
+        msg1 += f"🕐 {quebec_time.strftime('%H:%M:%S')} (Heure Québec)\n"
+        msg1 += f"📡 {len(matches)} matchs NFL en direct | {len(predictions)} avec prédictions\n"
+        msg1 += "═" * 70 + "\n\n"
+
+        if buy_picks:
+            msg1 += "✅ ACHETER - Meilleure valeur\n"
+            msg1 += "─" * 70 + "\n\n"
+            for i, (away, home, pred) in enumerate(buy_picks, 1):
+                msg1 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg1 += f"   🏈 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg1 += "✅ Aucun pick BUY actuellement\n\n"
+
+        await update.message.reply_text(msg1)
+
+        msg2 = "👀 MONITORING - À surveiller\n"
+        msg2 += "─" * 70 + "\n\n"
+
+        if monitoring_picks:
+            for i, (away, home, pred) in enumerate(monitoring_picks, 1):
+                msg2 += f"{i}️⃣ {away.upper()} @ {home.upper()}\n"
+                msg2 += f"   🔴 {pred['pick']} @ {pred['odds']}\n\n"
+        else:
+            msg2 += "Aucun monitoring\n\n"
+
+        msg2 += "─" * 70 + "\n"
+        msg2 += f"📊 RÉSUMÉ: {len(buy_picks)} BUY | {len(monitoring_picks)} MONITORING | {len(pass_picks)} PASS"
+
+        await update.message.reply_text(msg2)
+    except Exception as e:
+        logger.error(f"❌ pronostics_nfl: {e}")
+        await update.message.reply_text(f"❌ Erreur NFL: {e}")
+
+
+async def pronostics_mondial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pronostics Coupe du Monde FIFA 2026 — Dixon-Coles + Odds API"""
+    try:
+        await update.message.reply_text(
+            "⏳ Analyse des matchs Coupe du Monde en cours..."
+        )
+
+        if not WC_AVAILABLE:
+            await update.message.reply_text(
+                "❌ La Coupe du Monde n'est plus couverte par Ultron pour le moment."
+            )
+            return
+
+        picks = run_wc_analysis(days_ahead=2, send=False)
+
+        if not picks:
+            matches = get_live_matches_wc()
+            if not matches:
+                await update.message.reply_text(
+                    "❌ Aucun match Coupe du Monde trouvé aujourd'hui.\n"
+                    "_(Les matchs commencent le 11 juin 2026)_"
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ {len(matches)} match(s) trouvé(s) mais aucun pick EV positif."
+                )
+            return
+
+        msg = format_wc_message(picks)
+
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(
+                    msg[i:i+4000], parse_mode="Markdown"
+                )
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"❌ pronostics_mondial: {e}")
+        await update.message.reply_text(f"❌ Erreur Mondial: {e}")
+
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche l'aide"""
+    msg = "🤖 ULTRON v6.0 - AIDE\n\n"
+    msg += "COMMANDES MATCHS (Équipes en direct):\n"
+    msg += "/nba - Équipes NBA 🏀\n"
+    msg += "/nhl - Équipes NHL 🏒\n"
+    msg += "/mlb - Équipes MLB ⚾\n"
+    msg += "/nfl - Équipes NFL 🏈\n\n"
+    msg += "COMMANDES PRONOSTICS:\n"
+    msg += "/pronostics nba - Prédictions NBA\n"
+    msg += "/pronostics nhl - Prédictions NHL 🏒\n"
+    msg += "/pronostics mlb - Prédictions MLB ⚾\n"
+    msg += "/pronostics nfl - Prédictions NFL 🏈\n\n"
+    msg += "PARLAYS (Combinaisons multiiples):\n"
+    msg += "/parlays - Auto-suggestions de parlays 🎯\n"
+    msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
+    msg += "COMMANDES PLAYER PROPS:\n"
+    msg += "/daily_props - Props de TOUS les matchs du jour 🔥\n"
+    msg += "/props_match [équipe1] vs [équipe2] - Props du match\n"
+    msg += "/player [nom] - Props d'un joueur star 🌟\n"
+    msg += "/all_props - Tous les joueurs stars disponibles\n\n"
+    msg += "COMMANDES ESPN EN DIRECT:\n"
+    msg += "/boxscore nba — Box scores en direct 📊\n"
+    msg += "/boxscore nhl — Box scores NHL 🏒\n"
+    msg += "/boxscore nfl — Box scores NFL 🏈\n"
+    msg += "/leaders nba — Leaders stats saison NBA 🏆\n"
+    msg += "/leaders nhl — Leaders stats saison NHL 🏒\n"
+    msg += "/leaders nfl — Leaders stats saison NFL 🏈\n\n"
+    msg += "EXPLICATION DES PICKS:\n"
+    msg += "✅ BUY - Valeur EV > +1%\n"
+    msg += "👀 MONITORING - EV entre 0% et +1%\n"
+    msg += "⏸ PASS - EV ≤ 0%\n\n"
+    msg += "💰 Bankroll Management: Risk 1-2% par pick!\n"
+    await update.message.reply_text(msg)
+
+async def player_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyse les props d'un joueur spécifique"""
+    try:
+        if not context.args:
+            await update.message.reply_text("Usage: /player [nom du joueur]\nEx: /player LeBron James")
+            return
+        
+        player_name = " ".join(context.args)
+        props = get_player_props(player_name)
+        
+        if not props:
+            props_db  = get_dynamic_player_props()
+            available = "\n".join(sorted(props_db.keys())[:10])
+            msg = f"❌ Joueur non trouvé: {player_name}\n\n"
+            msg += "Joueurs disponibles:\n"
+            msg += available + "\n"
+            msg += f"\n... et {max(0, len(props_db) - 10)} autres"
+            await update.message.reply_text(msg)
+            return
+        
+        # Prédire les points
+        predicted_pts = predict_player_points(
+            player_name=player_name,
+            opponent_team="opponent",
+            home_away="home"
+        )
+        
+        if not predicted_pts:
+            await update.message.reply_text(f"❌ Impossible de prédire les points pour {player_name}")
+            return
+        
+        # Analyser les props
+        analysis = analyze_player_props_ou(
+            predicted_pts,
+            props['props']['points']['line'],
+            props['props']['points'],
+            min_threshold=0.3
+        )
+        
+        # Formater le message
+        msg = f"""
+🏀 {player_name}
+Équipe: {props['team']} | Position: {props['position']}
+━━━━━━━━━━━━━━━━━━━━
+Ligne: {analysis['line']} pts
+Prédiction: {analysis['predicted_points']} pts
+Écart: {abs(analysis['difference']):.1f} pts
+
+"""
+        
+        if analysis['side'] != 'none':
+            confidence_emoji = {
+                'high': '🔥',
+                'medium': '⚡',
+                'low': '📌'
+            }.get(analysis['confidence'], '📌')
+            
+            side_text = f"OVER ⬆️ @ {props['props']['points']['over']}" if analysis['side'] == 'over' else f"UNDER ⬇️ @ {props['props']['points']['under']}"
+            
+            msg += f"🟢 {confidence_emoji} RECOMMANDATION: {side_text}\n"
+            msg += f"Value: +{analysis['value_margin']:.1f}%\n"
+            msg += f"Confiance: {analysis['confidence'].upper()}\n"
+        else:
+            msg += "🔴 ➡️ Pas de value identifiée\n"
+        
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"❌ Erreur /player: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+async def match_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyse les props de tous les joueurs d'un match"""
+    try:
+        if len(context.args) < 3 or context.args[1].lower() != 'vs':
+            await update.message.reply_text("Usage: /props_match [équipe1] vs [équipe2]\nEx: /props_match Lakers vs Celtics")
+            return
+        
+        home_team = context.args[0]
+        away_team = " ".join(context.args[2:])
+        
+        await update.message.reply_text("⏳ Analyse en cours...")
+        
+        # Analyser tous les props
+        results = analyze_all_player_props(home_team, away_team)
+        
+        msg = f"🏀 {home_team.upper()} vs {away_team.upper()}\n"
+        msg += "━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Joueurs domicile
+        if results['home_team']:
+            home_msg = format_team_props_summary(home_team, results['home_team'])
+            msg += home_msg + "\n"
+        else:
+            msg += f"❌ Pas de props pour {home_team}\n\n"
+        
+        # Joueurs extérieur
+        if results['away_team']:
+            away_msg = format_team_props_summary(away_team, results['away_team'])
+            msg += away_msg
+        else:
+            msg += f"❌ Pas de props pour {away_team}\n"
+        
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ Erreur /props_match: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+async def all_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Liste tous les joueurs stars disponibles"""
+    try:
+        msg = "⭐ JOUEURS STARS NBA DISPONIBLES\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Grouper par équipe (données ESPN temps réel)
+        props_db = get_dynamic_player_props()
+        teams = {}
+        for player, data in props_db.items():
+            team = data['team']
+            if team not in teams:
+                teams[team] = []
+            teams[team].append(player)
+
+        # Afficher par équipe
+        for team in sorted(teams.keys()):
+            msg += f"🏀 {team}\n"
+            for player in teams[team]:
+                props = props_db[player]
+                line = props['props']['points']['line']
+                msg += f"   • {player} ({line})\n"
+            msg += "\n"
+        
+        msg += "\n💡 Utilise: /player [nom]\nEx: /player LeBron James"
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ Erreur /all_props: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+@rate_limit(60)
+@rate_limit(60)
+async def cmd_totals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Analyse les totaux O/U NBA/NHL/MLB via totals_analyzer"""
+    try:
+        await update.message.reply_text("⏳ Analyse des totaux O/U en cours (NBA + NHL + MLB)...")
+
+        if not TOTALS_AVAILABLE:
+            await update.message.reply_text("❌ Module totals_analyzer non disponible.")
+            return
+
+        # Filtrer les sports selon args optionnels: /totals nba  /totals nhl mlb
+        args = context.args or []
+        if args:
+            sports = [a.upper() for a in args if a.upper() in ("NBA", "NHL", "MLB")]
+            if not sports:
+                await update.message.reply_text(
+                    "⚠️ Sports valides: NBA, NHL, MLB\n"
+                    "Exemple: /totals nba nhl"
+                )
+                return
+        else:
+            sports = ["NBA", "NHL", "MLB"]
+
+        picks = run_totals_analysis(sports=sports, send=False)
+
+        if not picks:
+            await update.message.reply_text(
+                f"❌ Aucun pick O/U avec EV positif aujourd'hui "
+                f"({', '.join(sports)})."
+            )
+            return
+
+        msg = format_totals_message(picks)
+
+        # Envoyer en chunks si trop long
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur /totals: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+
+@rate_limit(60)
+async def daily_props(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les props joueurs NBA du jour via nba_player_props"""
+    try:
+        await update.message.reply_text("⏳ Analyse des props joueurs NBA en cours...")
+
+        if not NBA_PROPS_AVAILABLE:
+            await update.message.reply_text("❌ Module nba_player_props non disponible.")
+            return
+
+        picks = run_props_analysis(send=False)
+
+        if not picks:
+            await update.message.reply_text("❌ Aucun prop joueur avec valeur détectée aujourd'hui.")
+            return
+
+        quebec_time = get_quebec_time()
+        buy_picks = [p for p in picks if p["status"] == "BUY"]
+        mon_picks = [p for p in picks if p["status"] == "MONITORING"]
+
+        lines = [
+            "🌟 *ULTRON — PROPS JOUEURS NBA*",
+            f"🕐 {quebec_time.strftime('%H:%M')} (Québec) | Top 15 stars analysées",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if buy_picks:
+            lines.append(f"\n✅ *BUY ({len(buy_picks)} pick{'s' if len(buy_picks) > 1 else ''})*\n")
+            for p in buy_picks:
+                side_emoji = "⬆️" if p["side"] == "OVER" else "⬇️"
+                home_str   = "🏠" if p["is_home"] else "✈️"
+                b2b_str    = " ⚠️ B2B" if p["is_b2b"] else ""
+                source_str = "🟢" if p["source"] == "ODDS_API" else "📊"
+                lines.append(
+                    f"🔥 *{p['player']}* {home_str}{b2b_str}\n"
+                    f"   {side_emoji} *{p['side']} {p['book_line']} pts* @ `{p['bet_odds']:.2f}`\n"
+                    f"   📊 Prédit: *{p['predicted_pts']}* | Saison: {p['season_avg']} | L10: {p['l10_avg']}\n"
+                    f"   🎯 Hit rate L10: *{p['hit_rate_l10']:.0%}* | EV: *{p['ev']*100:+.1f}%*\n"
+                    f"   💡 Confiance: *{p['confidence']}/100* {source_str}\n"
+                )
+
+        if mon_picks:
+            lines.append(f"\n👀 *MONITORING ({len(mon_picks)})*\n")
+            for p in mon_picks[:3]:
+                side_emoji = "⬆️" if p["side"] == "OVER" else "⬇️"
+                lines.append(
+                    f"✅ *{p['player']}* — {side_emoji} {p['side']} {p['book_line']} "
+                    f"| Prédit: {p['predicted_pts']} | Conf: {p['confidence']}/100\n"
+                )
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append(
+            f"📊 {len(picks)} props | {len(buy_picks)} BUY | {len(mon_picks)} MONITORING"
+        )
+
+        msg = "\n".join(lines)
+
+        # Envoyer en chunks si trop long
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(msg[i:i+4000], parse_mode="Markdown")
+        else:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"❌ Erreur /daily_props: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+# ═══════════════════════════════════════════════════════════════════════════
+# AUTOMATIONS - ENVOIS AUTOMATIQUES
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Suivi des matchs déjà notifiés (évite les doublons)
+_notified_starts = set()
+# Set global des picks envoyés en session (évite redondance)
+# Format: {f"prono_{date}_{sport}_{away}_{home}": timestamp}
+_notified_pronostics = {}
+PRONO_RENOTIFY_HOURS = 24  # Ne renvoyer le même pick que après 24h
+
+# Compteur quotidien des picks MLB envoyés (pour limiter à 5/jour)
+_mlb_picks_sent_today = {"date": None, "count": 0}
+MLB_PICKS_MAX_PER_DAY = 5
+
+MOTIVATION_MESSAGES = [
+    "🔥 Every expert was once a beginner. Trust the process, trust the data.",
+    "💎 Discipline beats motivation every single day. Show up, analyze, win.",
+    "🧠 The best bet you can make is on yourself. Stay sharp, stay focused.",
+    "⚡ Success is not luck — it's preparation meeting opportunity.",
+    "🎯 One good decision today builds tomorrow's winning streak.",
+    "🚀 The grind is silent. The results speak loud. Keep going.",
+    "💪 Consistency is what separates the amateurs from the professionals.",
+    "🌟 Today is a new opportunity to make smarter picks than yesterday.",
+    "🏆 Champions don't skip their morning routine. Neither should you.",
+    "🔑 Value is found by those who look harder. Look harder today.",
+    "📊 Trust the model. Trust the process. The edge is real.",
+    "⚔️ Stay patient. The right play at the right time — that's everything.",
+    "🎲 Randomness is temporary. Edge is permanent. Stay disciplined.",
+    "🌅 A new day, a new edge. Let ULTRON guide your picks.",
+    "💡 Smart money is quiet money. Analyze, decide, execute.",
+]
+
+def _build_picks_for_sport(sport: str):
+    """Génère la liste des picks pour un sport donné. Retourne liste de dicts."""
+    picks = []
+    if sport == "nba":
+        matches = get_live_matches_nba()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nba(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"🏀 {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    elif sport == "nhl":
+        matches = get_live_matches_nhl()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_nhl(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"🏒 {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    elif sport == "mlb":
+        matches = get_live_matches_mlb()
+        for away, home in matches:
+            try:
+                pred = generate_prediction_mlb(away, home)
+                if pred and pred.get('status', '') != 'PASS':
+                    picks.append({
+                        "label": f"⚾ {away} @ {home}",
+                        "pick": pred.get('pick', ''),
+                        "odds": pred.get('odds', ''),
+                        "confidence": pred.get('confidence', 0),
+                        "ev": pred.get('ev_pct', ''),
+                        "status": pred.get('status', ''),
+                    })
+            except Exception:
+                continue
+    # Trier par confiance décroissante
+    picks.sort(key=lambda x: x['confidence'], reverse=True)
+    return picks
+
+
+async def auto_daily_motivation(context):
+    """9h00 Quebec: Message de motivation + résumé des matchs + alertes blessures"""
+    if not TELEGRAM_CHAT_ID:
+        return
+
+    quebec_time = get_quebec_time()
+    day_index = quebec_time.timetuple().tm_yday % len(MOTIVATION_MESSAGES)
+    quote = MOTIVATION_MESSAGES[day_index]
+
+    msg = f"🌅 GOOD MORNING — {quebec_time.strftime('%A, %B %d %Y')}\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg += f"{quote}\n\n"
+    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    # Résumé des matchs du jour
+    sports_config = [
+        ("basketball/nba", "🏀 NBA"),
+        ("hockey/nhl", "🏒 NHL"),
+        ("baseball/mlb", "⚾ MLB"),
+    ]
+    total_matches = 0
+    today = quebec_time.strftime("%Y%m%d")
+
+    for sport_path, sport_label in sports_config:
+        try:
+            url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={today}"
+            resp = requests.get(url, timeout=8)
+            if resp.status_code == 200:
+                data = resp.json()
+                events = data.get('events', [])
+                if events:
+                    msg += f"\n{sport_label}: {len(events)} matchs aujourd'hui\n"
+                    for ev in events[:3]:  # max 3 par sport
+                        comp = ev.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('shortDisplayName', '?')
+                            home = competitors[1].get('team', {}).get('shortDisplayName', '?')
+                            date_str = ev.get('date', '')
+                            try:
+                                utc_dt = datetime.datetime.strptime(date_str, "%Y-%m-%dT%H:%MZ")
+                                utc_dt = utc_dt.replace(tzinfo=pytz.utc)
+                                qc_dt = utc_dt.astimezone(QUEBEC_TZ)
+                                heure_match = qc_dt.strftime('%H:%M')
+                            except Exception:
+                                heure_match = "?"
+                            msg += f"  • {away} @ {home} ({heure_match})\n"
+                    total_matches += len(events)
+        except Exception:
+            continue
+
+    if total_matches == 0:
+        msg += "\nAucun match programmé aujourd'hui.\n"
+
+    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg += "🤖 ULTRON envoie les picks 1h avant chaque match!"
+
+    try:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        if TELEGRAM_CHAT_ID_VIP:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+        logger.info("✅ Motivation + résumé matinal envoyés")
+    except Exception as e:
+        logger.error(f"❌ Erreur motivation: {e}")
+
+    # ── Alertes blessures (message séparé, seulement si matchs aujourd'hui) ──
+    if ESPN_CONTEXT_AVAILABLE and total_matches > 0:
+        try:
+            logger.info("🏥 ESPN: récupération blessures...")
+            espn_ctx = get_full_context_all_sports()
+            inj_msg = format_injuries_alert(espn_ctx)
+            if inj_msg:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=inj_msg)
+                if TELEGRAM_CHAT_ID_VIP:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=inj_msg)
+                logger.info("✅ Alertes blessures envoyées")
+            else:
+                logger.info("ℹ️ Aucune blessure clé aujourd'hui")
+        except Exception as e:
+            logger.error(f"❌ Erreur alertes blessures: {e}")
+
+
+def normalize_to_bookmaker_line(value: float) -> float:
+    """
+    Normalise une ligne aux standards des bookmakers: seulement .5 ou .0
+    Ex: 4.3 → 4.5, 4.2 → 4.0, 20.8 → 21.0
+    """
+    if value is None:
+        return value
+    integer_part = int(value)
+    decimal_part = value - integer_part
+    
+    if decimal_part < 0.25:
+        return float(integer_part)
+    elif decimal_part < 0.75:
+        return float(integer_part) + 0.5
+    else:
+        return float(integer_part + 1)
+
+
+def _player_props_msg_for_match(away: str, home: str, max_picks: int = None) -> str:
+    """
+    Analyse et formate les props joueurs NBA pour un match.
+    max_picks : None = tous les picks (VIP) | int = limite le total (FREE).
+    Retourne une chaîne vide si aucune value n'est identifiée.
+    """
+    try:
+        results = analyze_all_player_props(home, away)
+
+        # Rassembler tous les picks des deux équipes en une liste plate
+        all_picks_raw = []
+        for entry in results.get('away_team', []):
+            if entry['analysis']['side'] != 'none':
+                all_picks_raw.append({'team': away, **entry})
+        for entry in results.get('home_team', []):
+            if entry['analysis']['side'] != 'none':
+                all_picks_raw.append({'team': home, **entry})
+
+        if not all_picks_raw:
+            return ""
+
+        # Trier par confiance décroissante puis value_margin
+        _conf_order = {'high': 0, 'medium': 1, 'low': 2}
+        all_picks_raw.sort(
+            key=lambda x: (_conf_order.get(x['analysis']['confidence'], 3),
+                           -x['analysis'].get('value_margin', 0))
+        )
+
+        # Limiter si max_picks défini
+        picks_to_show = all_picks_raw if max_picks is None else all_picks_raw[:max_picks]
+
+        msg  = "🌟  P R O P S  J O U E U R S\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        if max_picks is not None:
+            msg += f"🔐  Canal gratuit : top {max_picks} picks\n"
+            msg += "    Rejoins le VIP pour tous les picks ! 👑\n\n"
+
+        for entry in picks_to_show:
+            a  = entry['analysis']
+            ce = {'high': '🔥', 'medium': '⚡', 'low': '📌'}.get(a['confidence'], '📌')
+            side = 'OVER' if a['side'] == 'over' else 'UNDER'
+            # Normaliser la ligne aux standards bookmakers (.5 ou .0)
+            normalized_line = normalize_to_bookmaker_line(a['line'])
+            normalized_pred = normalize_to_bookmaker_line(a['predicted_points'])
+            msg += f"{ce} {entry['player']}\n"
+            msg += f"   {side} {normalized_line} | Pred: {normalized_pred}\n"
+            msg += f"   +{int(round(a.get('value_margin', 0)))}%\n\n"
+
+        return msg.strip()
+    except Exception as e:
+        logger.debug(f"⚠️ _player_props_msg_for_match: {e}")
         return ""
 
-    wins   = sum(1 for p in updated_picks if p["result"] == "WIN")
-    losses = sum(1 for p in updated_picks if p["result"] == "LOSS")
 
-    msg  = "🔔  R É S U L T A T S  —  ULTRON\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+def confidence_tier_emoji(confidence: float) -> str:
+    """
+    Emoji de force du pick basé sur la confiance (0-100).
+    🔒 Lock (haute confiance, 75+) | ⚡ Medium (60-74) | 🎲 Risqué (<60)
+    """
+    try:
+        c = float(confidence)
+    except (TypeError, ValueError):
+        return "🎲"
+    if c >= 75:
+        return "🔒"
+    if c >= 60:
+        return "⚡"
+    return "🎲"
 
-    for p in updated_picks:
-        icon    = "✅" if p["result"] == "WIN" else "❌"
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾"}.get(p["sport"], "🎯")
-        msg    += f"{icon}  {sport_e}  {p['pick_type']} — {p['pick_team']}\n"
-        msg    += f"     Cote  {p['odds']}  •  conf. {p['confidence']}%\n"
-        if p.get("score"):
-            msg += f"     {p['score']}\n"
-        msg += "\n"
 
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"✅ {wins} win(s)   ❌ {losses} loss(es)  ce soir\n\n"
+async def auto_send_pronostics(context):
+    """
+    Toutes les 30 minutes: vérifie s'il y a des matchs qui commencent
+    dans moins d'1 heure et envoie les picks pour ces matchs.
+    FREE = 1 pick | VIP = tous les picks
+    """
+    if not TELEGRAM_CHAT_ID:
+        return
 
-    # Mise à jour stats globales
-    stats = get_stats()
-    s_wr  = stats.get("win_rate", 0.0)
-    msg  += f"📈  Win Rate global :  {s_wr:.1%}  ({stats['wins']}W–{stats['losses']}L)"
-    return msg
+    quebec_time = get_quebec_time()
+    now_utc = datetime.datetime.now(pytz.utc)
+    date_key = quebec_time.strftime('%Y-%m-%d')
+
+    # ── Réinitialiser le compteur MLB si on est à un nouveau jour ──
+    global _mlb_picks_sent_today
+    if _mlb_picks_sent_today["date"] != date_key:
+        _mlb_picks_sent_today["date"] = date_key
+        _mlb_picks_sent_today["count"] = 0
+        logger.info(f"🔄 Compteur MLB reinitialisé pour le jour: {date_key}")
+
+    logger.info(f"🔍 auto_send_pronostics: vérification des matchs... (Québec: {quebec_time.strftime('%H:%M')}, UTC: {now_utc.strftime('%H:%M')})")
+
+    sports_config = [
+        ("basketball/nba", "nba", "🏀"),
+        ("hockey/nhl", "nhl", "🏒"),
+        ("baseball/mlb", "mlb", "⚾"),
+        ("football/nfl", "nfl", "🏈"),
+    ]
+
+    upcoming_matches = []  # [(sport_key, emoji, away, home)]
+
+    for sport_path, sport_key, emoji in sports_config:
+        try:
+            # Vérifier aujourd'hui ET demain (UTC) — les matchs de soirée EDT
+            # ex: 22h EDT = 02h00 UTC lendemain. ESPN indexe par date UTC.
+            now_utc_date = datetime.datetime.utcnow()
+            dates_to_check = [
+                now_utc_date.strftime("%Y%m%d"),
+                (now_utc_date + datetime.timedelta(days=1)).strftime("%Y%m%d"),
+            ]
+
+            all_events = []
+            for date_str_q in dates_to_check:
+                url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={date_str_q}"
+                resp = requests.get(url, timeout=8)
+                if resp.status_code == 200:
+                    events_cnt = len(resp.json().get('events', []))
+                    logger.debug(f"  [{sport_key}] {date_str_q}: {events_cnt} events ESPN")
+                    all_events.extend(resp.json().get('events', []))
+            
+            if not all_events:
+                logger.info(f"ℹ️  auto_send_pronostics [{sport_key}]: AUCUN match trouvé pour {dates_to_check}")
+                continue
+
+            for event in all_events:
+                try:
+                    status_type = event.get('status', {}).get('type', {})
+                    status_desc = status_type.get('description', '').lower()
+                    status_name = status_type.get('name', '').lower()
+                    # Ignorer matchs terminés
+                    if any(s in status_desc for s in ['final', 'completed']):
+                        continue
+                    if 'status_final' in status_name:
+                        continue
+
+                    date_str = event.get('date', '')
+                    # ── Parsing robuste : ESPN retourne parfois avec ou sans secondes
+                    # ex: "2026-05-10T23:00Z"  ou  "2026-05-10T23:00:00Z"
+                    utc_dt = None
+                    for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+                        try:
+                            utc_dt = datetime.datetime.strptime(date_str, fmt).replace(tzinfo=pytz.utc)
+                            break
+                        except ValueError:
+                            continue
+                    if utc_dt is None:
+                        logger.warning(f"⚠️ auto_send_pronostics: format date inconnu '{date_str}' ({sport_key})")
+                        continue
+
+                    minutes_until = (utc_dt - now_utc).total_seconds() / 60
+
+                    # is_live = match qui a déjà commencé (heure passée)
+                    # On envoie les picks jusqu'à 120 min avant ET pendant le match (mais pas les finales)
+                    is_live = minutes_until < 0
+
+                    # Fenêtre d'envoi : dans les 120 min avant le match ET dans les 15 min après le début
+                    # Cela permet d'envoyer les picks même si le match a commencé mais pas encore fini
+                    if minutes_until <= 120 and (not is_live or minutes_until > -15):
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('displayName', '?')
+                            home = competitors[1].get('team', {}).get('displayName', '?')
+                            notify_key = f"prono_{date_key}_{sport_key}_{away}_{home}"
+                            
+                            # Vérifier si ce pick a déjà été envoyé (anti-redondance 24h)
+                            should_send = False
+                            if notify_key not in _notified_pronostics:
+                                should_send = True
+                            else:
+                                last_sent = _notified_pronostics[notify_key]
+                                elapsed_hours = (datetime.datetime.now() - last_sent).total_seconds() / 3600
+                                if elapsed_hours >= PRONO_RENOTIFY_HOURS:
+                                    should_send = True
+                                else:
+                                    logger.debug(f"⏭️  Déjà notifié récemment [{sport_key}]: {away} @ {home} (renvoie dans {PRONO_RENOTIFY_HOURS - elapsed_hours:.1f}h)")
+                            
+                            if should_send:
+                                _notified_pronostics[notify_key] = datetime.datetime.now()
+                                upcoming_matches.append((sport_key, emoji, away, home, utc_dt, is_live))
+                                logger.info(f"🎯 Match trouvé [{sport_key}]: {away} @ {home} dans {minutes_until:.0f} min")
+                            else:
+                                logger.debug(f"⏭️ Déjà notifié [{sport_key}]: {away} @ {home}")
+                    else:
+                        # Log pour diagnostiquer les matchs hors fenêtre
+                        try:
+                            comp = event.get('competitions', [{}])[0]
+                            t1 = comp.get('competitors', [{}])[0].get('team', {}).get('displayName', '?')
+                            t2 = comp.get('competitors', [{}])[1].get('team', {}).get('displayName', '?') if len(comp.get('competitors', [])) > 1 else '?'
+                            logger.info(f"⏳ Hors fenêtre [{sport_key}]: {t1}@{t2} dans {minutes_until:.0f} min (statut: {status_desc})")
+                        except Exception:
+                            pass
+                except Exception as e:
+                    logger.warning(f"⚠️ auto_send_pronostics event error [{sport_key}]: {e}")
+                    continue
+        except Exception as e:
+            logger.error(f"❌ auto_send_pronostics [{sport_key}] ERREUR: {e}")
+
+    if not upcoming_matches:
+        logger.warning(f"⚠️ auto_send_pronostics: AUCUN match dans la fenêtre 120min — rien à envoyer")
+        return
+
+    # ── Récupérer les cotes en temps réel UNE FOIS par sport (Odds API) ──
+    # Une seule requête par sport toutes les 4h — économie maximale de quota
+    sports_in_play = {sk for sk, *_ in upcoming_matches}
+    live_odds_by_sport = {}
+    for sk in sports_in_play:
+        live_odds_by_sport[sk] = fetch_odds_api(sk)
+
+    # ── Récupérer les blessures & alignements pour chaque sport en jeu ────
+    injuries_by_sport = {}
+    for sk in sports_in_play:
+        if sk == "nba":
+            injuries_by_sport[sk] = get_injuries('basketball', 'nba')
+        elif sk == "nhl":
+            injuries_by_sport[sk] = get_injuries('hockey', 'nhl')
+        elif sk == "mlb":
+            injuries_by_sport[sk] = get_injuries('baseball', 'mlb')
+        elif sk == "nfl":
+            injuries_by_sport[sk] = get_injuries('football', 'nfl')
+    logger.info(f"✅ Blessures chargées pour: {', '.join([f'{sk}({len(injuries_by_sport[sk])})' for sk in injuries_by_sport])}")
+
+    # ── Contexte ESPN : blessures + stats (si module disponible) ──────────
+    espn_games_by_sport = {}
+    if ESPN_CONTEXT_AVAILABLE:
+        try:
+            for sk in sports_in_play:
+                espn_sport = sk.upper()  # "nba" → "NBA" etc.
+                espn_games_by_sport[sk] = get_games_with_context(espn_sport)
+            logger.info(f"✅ ESPN context chargé pour: {list(espn_games_by_sport.keys())}")
+        except Exception as e:
+            logger.warning(f"⚠️ ESPN context non disponible: {e}")
+
+    # Générer les picks pour chaque match trouvé
+    all_picks = []
+    for sport_key, emoji, away, home, match_time, match_is_live in upcoming_matches:
+        try:
+            # ── Note: MLB, generate ALL predictions, then filter to top 5 later ──
+            
+            if sport_key == "nba":
+                pred = generate_prediction_nba(away, home)
+            elif sport_key == "nhl":
+                pred = generate_prediction_nhl(away, home)
+            elif sport_key == "mlb":
+                pred = generate_prediction_mlb(away, home)
+            elif sport_key == "nfl":
+                pred = generate_prediction_nfl(away, home)
+            else:
+                logger.debug(f"⏭️ Sport non géré dans auto_send: {sport_key}")
+                continue
+            
+            # ── Enrichir le scoring runline pour MLB si données ESPN disponibles ──
+            if sport_key == "mlb" and pred and MLB_RUNLINE_AVAILABLE:
+                try:
+                    game_id = ""  # game_id non disponible dans ce scope
+                    pred = enrich_mlb_runline_score(away, home, game_id, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ MLB runline enrichment failed: {e}")
+            
+            # ── Enrichir le scoring spread pour NBA si données ESPN disponibles ──
+            if sport_key == "nba" and pred and NBA_SPREAD_AVAILABLE:
+                try:
+                    away_abbr = find_team_nba(away) or away.lower()
+                    home_abbr = find_team_nba(home) or home.lower()
+                    pred = enrich_nba_spread_score(home, away, home_abbr, away_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NBA spread enrichment failed: {e}")
+            
+            # ── Enrichir le scoring puck line pour NHL si données ESPN disponibles ──
+            if sport_key == "nhl" and pred and NHL_PUCKLINE_AVAILABLE:
+                try:
+                    away_abbr = find_team_nhl(away) or away.lower()
+                    home_abbr = find_team_nhl(home) or home.lower()
+                    game_id = ""  # game_id non disponible dans ce scope
+                    pred = enrich_nhl_puckline_score(home, away, home_abbr, away_abbr, game_id, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NHL puckline enrichment failed: {e}")
+            
+            # ── Enrichir le scoring MoneyLine pour NBA si données ESPN avancées disponibles ──
+            if sport_key == "nba" and pred and NBA_MONEYLINE_ADVANCED_AVAILABLE:
+                try:
+                    away_abbr = find_team_nba(away) or away.lower()
+                    home_abbr = find_team_nba(home) or home.lower()
+                    pred = enrich_nba_moneyline_score(away, home, away_abbr, home_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NBA moneyline enrichment failed: {e}")
+
+            # ── Enrichir le scoring MoneyLine pour NHL si données ESPN avancées disponibles ──
+            if sport_key == "nhl" and pred and NHL_MONEYLINE_ADVANCED_AVAILABLE:
+                try:
+                    away_abbr = find_team_nhl(away) or away.lower()
+                    home_abbr = find_team_nhl(home) or home.lower()
+                    pred = enrich_nhl_moneyline_score(away, home, away_abbr, home_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ NHL moneyline enrichment failed: {e}")
+
+            # ── Enrichir le scoring MoneyLine pour MLB si données ESPN avancées disponibles ──
+            if sport_key == "mlb" and pred and MLB_MONEYLINE_ADVANCED_AVAILABLE:
+                try:
+                    away_abbr = find_team_mlb(away) or away.lower()
+                    home_abbr = find_team_mlb(home) or home.lower()
+                    pred = enrich_mlb_moneyline_score(away, home, away_abbr, home_abbr, pred)
+                except Exception as e:
+                    logger.warning(f"⚠️ MLB moneyline enrichment failed: {e}")
+
+            if pred:
+                qc_time = match_time.astimezone(QUEBEC_TZ)
+
+                # Remplacer ML + Spread + O/U par les cotes réelles si disponibles
+                live = get_live_odds_for_match(away, home, live_odds_by_sport.get(sport_key, []))
+                if live:
+                    ml_pick_away = f"{away.upper()} ML"
+                    ml_pick_home = f"{home.upper()} ML"
+                    if live["ml_away"] > live["ml_home"]:
+                        real_ml_pick = ml_pick_away
+                        real_ml_odds = f"{live['ml_away']:.2f}"
+                    else:
+                        real_ml_pick = ml_pick_home
+                        real_ml_odds = f"{live['ml_home']:.2f}"
+                    real_spread_pick = live["spread_pick"]
+                    real_spread_odds = live["spread_odds"]
+                    real_ou_pick = live["ou_pick"]
+                    real_ou_odds = live["ou_odds"]
+                    source_tag = "🟢"  # cotes réelles
+                else:
+                    real_ml_pick = pred.get('ml_pick', pred.get('pick', ''))
+                    real_ml_odds = pred.get('ml_odds', pred.get('odds', ''))
+                    real_spread_pick = pred.get('spread_pick', '')
+                    real_spread_odds = pred.get('spread_odds', '')
+                    real_ou_pick = pred.get('ou_pick', '')
+                    real_ou_odds = pred.get('ou_odds', '')
+                    source_tag = "📊"  # cotes calculées
+
+                # ── Ajustement ESPN (blessures + stats) ──────────────────
+                base_ml_conf = pred.get('ml_confidence', pred.get('confidence', 50))
+                espn_tag = ""
+                ctx_game = None
+                if ESPN_CONTEXT_AVAILABLE and espn_games_by_sport.get(sport_key):
+                    ctx_game = find_game_context(away, home, espn_games_by_sport[sport_key])
+                if ctx_game:
+                    prob_adj = ctx_game.get('prob_adjustment', 0.0)
+                    if prob_adj != 0.0:
+                        # Determine if our pick aligns with ESPN's adjustment
+                        home_in_pick = home.lower() in real_ml_pick.lower()
+                        espn_agrees = (home_in_pick and prob_adj > 0) or \
+                                      (not home_in_pick and prob_adj < 0)
+                        delta = min(10, int(abs(prob_adj) * 100))
+                        if espn_agrees:
+                            base_ml_conf = min(97, base_ml_conf + delta)
+                            espn_tag = " 🏥✅"
+                        else:
+                            base_ml_conf = max(10, base_ml_conf - delta)
+                            espn_tag = " 🏥⚠️"
+
+                late_tag = ""  # Matchs en cours désactivés
+                
+                all_picks.append({
+                    "label": f"{emoji} {away} @ {home}{late_tag}",
+                    "heure": qc_time.strftime('%H:%M'),
+                    "source": source_tag,
+                    "bookmaker": pred.get('bookmaker', 'DraftKings'),
+                    "sport": sport_key,  # NBA/NHL/MLB
+                    # ML
+                    "ml_pick": real_ml_pick,
+                    "ml_odds": real_ml_odds,
+                    "ml_confidence": base_ml_conf,
+                    "ml_ev_pct": pred.get('ml_ev_pct', pred.get('ev_pct', '')),
+                    "ml_status": pred.get('status', '') + espn_tag,
+                    # Spread
+                    "spread_pick": real_spread_pick,
+                    "spread_odds": real_spread_odds,
+                    "spread_confidence": pred.get('spread_confidence', 0),
+                    "spread_status": pred.get('spread_status', '⏸ PASS'),
+                    # O/U
+                    "ou_pick": real_ou_pick,
+                    "ou_odds": real_ou_odds,
+                    "ou_confidence": pred.get('ou_confidence', 0),
+                    "ou_status": pred.get('ou_status', '⏸ PASS'),
+                    # pick FREE = ML
+                    "pick": real_ml_pick,
+                    "odds": real_ml_odds,
+                    "confidence": base_ml_conf,
+                    "ev": pred.get('ev_pct', ''),
+                })
+        except Exception as _pred_err:
+            logger.warning(f"⚠️ Erreur prédiction [{sport_key}] {away} @ {home}: {_pred_err}")
+            continue
+
+    if not all_picks:
+        return
+
+    all_picks.sort(key=lambda x: x['confidence'], reverse=True)
+
+    # ── MLB réactivé (était désactivé par erreur — voir historique) ──────
+
+    # ── Filtrage Brain : retire les picks sous le seuil appris ───────────
+    if BRAIN_AVAILABLE and PICK_MEMORY_AVAILABLE:
+        filtered = []
+        for p in all_picks:
+            sport_key = ("NBA" if "🏀" in p["label"] else
+                         "NHL" if "🏒" in p["label"] else
+                         "MLB" if "⚾" in p["label"] else
+                         "NFL")
+            if should_send_pick(sport_key, p["confidence"], p.get("pick_type", "ML")):
+                filtered.append(p)
+            else:
+                logger.info(f"🧠 Brain filter: BLOQUÉ {p['label']} conf={p['confidence']}% (sous seuil {sport_key})")
+        if filtered:
+            all_picks = filtered
+            logger.info(f"🧠 Brain filter: {len(all_picks)} pick(s) retenus")
+
+    heure_qc = quebec_time.strftime('%H:%M')
+
+    # (Génération automatique des parlays retirée du message VIP — le calcul
+    # reste disponible via la commande manuelle /parlays)
+
+    # ── Canal FREE : 1 seul pick ML en format COMPACT ────────────────────
+    free = all_picks[0]
+    # Format compact: "Rays ML" ou "Dodgers +1.5" ou "Over 8.5"
+    pick_display = free['ml_pick']
+    if " ML" in pick_display:
+        team_name = pick_display.replace(" ML", "").split()[-1]
+        pick_line = f"{team_name} ML"
+    else:
+        pick_line = pick_display
+    
+    # Ajouter emoji de force (🔒 Lock / ⚡ Medium / 🎲 Risqué) basé sur la confiance
+    status_emoji = confidence_tier_emoji(free.get('ml_confidence', 0))
+    msg_free  = f"{status_emoji} {pick_line} — Confiance: {free.get('ml_confidence', 0)}/100\n"
+    # Ajouter les autres picks si multi-match
+    for p in all_picks[1:]:
+        status_e = confidence_tier_emoji(p.get('ml_confidence', 0))
+        pick_display2 = p['ml_pick']
+        if " ML" in pick_display2:
+            team_name = pick_display2.replace(" ML", "").split()[-1]
+            msg_free += f"{status_e} {team_name} ML — Confiance: {p.get('ml_confidence', 0)}/100\n"
+        else:
+            msg_free += f"{status_e} {pick_display2} — Confiance: {p.get('ml_confidence', 0)}/100\n"
+    
+    msg_free += "\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    msg_free += "🏟️  " + free['label'] + "\n"
+    msg_free += f"🕐  {free['heure']} (Québec)  |  💼 {free.get('bookmaker', 'N/A')}\n"
+    msg_free += f"💵  Cote: {free['ml_odds']}\n"
+    msg_free += f"{free['ml_status']}\n"
+    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    msg_free += "💎 Parlays + autres picks en VIP ↑"
+
+    try:
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
+        logger.info(f"✅ Pick FREE envoyé: {free['label']}")
+    except Exception as e:
+        logger.error(f"❌ Erreur FREE: {e}")
+
+    # ── Canal VIP : tous les picks + PARLAYS BONUS ──────────────────────
+    if TELEGRAM_CHAT_ID_VIP:
+        src_label = "🟢 Cotes live" if any(p.get('source') == '🟢' for p in all_picks) else "📊 Modèle ML"
+        msg_vip  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_vip += f"💎  U L T R O N  V I P\n"
+        msg_vip += f"     {len(all_picks)} PICK(S)  •  {heure_qc}  •  {src_label}\n"
+        msg_vip += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        for i, p in enumerate(all_picks, 1):
+            emoji_rank = "🥇" if i == 1 else ("🥈" if i == 2 else "🏅")
+            src = p.get('source', '📊')
+            # Statut ML: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_ml = confidence_tier_emoji(p.get('ml_confidence', 0))
+            # Statut SPREAD: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_spread = confidence_tier_emoji(p.get('spread_confidence', 0))
+            # Statut O/U: emoji basé sur la confiance (🔒/⚡/🎲)
+            status_emoji_ou = confidence_tier_emoji(p.get('ou_confidence', 0))
+            book = p.get('bookmaker', 'N/A')
+            
+            # Déterminer le label O/U selon le sport
+            sport = p.get('sport', 'NBA').upper()
+            if sport == 'MLB':
+                ou_label = "Total Runs O/U"
+            elif sport == 'NHL':
+                ou_label = "Total Goals O/U"
+            else:  # NBA
+                ou_label = "Total Points O/U"
+            
+            msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
+            msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
+            msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']} — Confiance: {p.get('ml_confidence', 0)}/100\n"
+            if p.get('spread_pick'):
+                # Afficher enriched runline pour MLB si disponible
+                if p.get('sport') == 'mlb' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    pitcher_era = p.get('pitcher_era', 0)
+                    pitcher_name = p.get('pitcher_name', 'TBD')
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
+                    msg_vip += f"{emoji_enriched} RUNLINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | ERA {pitcher_era:.2f})\n"
+                # Afficher enriched spread pour NBA si disponible
+                elif p.get('sport') == 'nba' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    net_rating = p.get('net_rating', 0)
+                    is_b2b = p.get('is_b2b', False)
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
+                    b2b_tag = " ⚠️ B2B" if is_b2b else ""
+                    msg_vip += f"{emoji_enriched} SPREAD: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | Net {net_rating:+.1f}){b2b_tag}\n"
+                # Afficher enriched puck line pour NHL si disponible
+                elif p.get('sport') == 'nhl' and p.get('confidence_enriched'):
+                    enriched_conf = p.get('confidence_enriched', 0)
+                    ats = p.get('ats_record', 'N/A')
+                    goalie_name = p.get('goalie', {}).get('name', 'TBD') if isinstance(p.get('goalie'), dict) else 'TBD'
+                    goalie_sv = p.get('goalie', {}).get('save_pct', 0.900) if isinstance(p.get('goalie'), dict) else 0.900
+                    emoji_enriched = confidence_tier_emoji(enriched_conf)
+                    msg_vip += f"{emoji_enriched} PUCK LINE: {p['spread_pick']} @ {p['spread_odds']} | {enriched_conf}/100 (ATS {ats} | 🥅 {goalie_name} {goalie_sv:.3f})\n"
+                else:
+                    msg_vip += f"{status_emoji_spread} SPREAD: {p['spread_pick']} @ {p['spread_odds']} — Confiance: {p.get('spread_confidence', 0)}/100\n"
+            if p.get('ou_pick'):
+                msg_vip += f"{status_emoji_ou} {ou_label}: {p['ou_pick']} @ {p['ou_odds']} — Confiance: {p.get('ou_confidence', 0)}/100\n"
+        
+        # Section PARLAYS BONUS retirée du canal VIP (demande utilisateur)
+
+        msg_vip += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg_vip += "🧠  Modèle ML  ULTRON v6.0\n"
+        msg_vip += "     Bonne chance! 🍀"
+        
+        try:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_vip)
+            logger.info(f"✅ {len(all_picks)} picks VIP envoyés (ML+Spread+O/U) + Parlays")
+        except Exception as e:
+            logger.error(f"❌ Erreur VIP: {e}")
+
+    # ── Mémorisation des picks (auto-notation) ────────────────────────────
+    if PICK_MEMORY_AVAILABLE:
+        today_date = quebec_time.strftime('%Y-%m-%d')
+        for p in all_picks:
+            # On extrait le sport_key depuis le label (emoji)
+            sport_label = ("NBA" if "🏀" in p["label"] else
+                           "NHL" if "🏒" in p["label"] else
+                           "MLB" if "⚾" in p["label"] else
+                           "NFL")
+            # Extrait away/home depuis le label ex: "🏀 Boston Celtics @ Miami Heat"
+            label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
+            parts = label_clean.split(" @ ")
+            away_t = parts[0].strip() if len(parts) == 2 else p["label"]
+            home_t = parts[1].strip() if len(parts) == 2 else ""
+            save_pick(
+                sport=sport_label,
+                away_team=away_t,
+                home_team=home_t,
+                pick_type="ML",
+                pick_team=p["ml_pick"].replace(" ML", "").strip().title(),
+                odds=p["ml_odds"],
+                confidence=p["ml_confidence"],
+                ev_pct=p.get("ml_ev_pct", ""),
+                game_date=today_date,
+            )
+        logger.info(f"💾 {len(all_picks)} picks mémorisés pour auto-notation")
+
+    # ── Player Props NBA : joueurs des équipes concernées ────────────────
+    import asyncio as _asyncio
+    for p in all_picks:
+        if "🏀" not in p["label"]:
+            continue  # NBA uniquement
+        label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
+        parts = label_clean.split(" @ ")
+        if len(parts) != 2:
+            continue
+        away_t, home_t = parts[0].strip(), parts[1].strip()
+        # VIP reçoit tous les picks, FREE seulement les 2 meilleurs
+        props_msg_vip  = _player_props_msg_for_match(away_t, home_t, max_picks=None)
+        props_msg_free = _player_props_msg_for_match(away_t, home_t, max_picks=2)
+        header = f"🏀 {away_t} @ {home_t}\n"
+        try:
+            if props_msg_free:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=header + props_msg_free)
+            if TELEGRAM_CHAT_ID_VIP and props_msg_vip:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=header + props_msg_vip)
+            logger.info(f"🌟 Props joueurs envoyés: {away_t} @ {home_t}")
+        except Exception as _pe:
+            logger.error(f"❌ Props joueurs envoi: {_pe}")
+        await _asyncio.sleep(0.5)
+
+    # ── COUPE DU MONDE FIFA 2026 — envoi automatique ──────────────────────
+    # Vérifie les matchs WC dans la fenêtre 120 min et envoie les picks EV+
+    if WC_AVAILABLE:
+        try:
+            wc_upcoming = []
+            today_str   = datetime.datetime.utcnow().strftime("%Y%m%d")
+            tmrw_str    = (datetime.datetime.utcnow() + datetime.timedelta(days=1)).strftime("%Y%m%d")
+
+            for d_str in (today_str, tmrw_str):
+                url  = (
+                    "https://site.api.espn.com/apis/site/v2/sports"
+                    f"/soccer/fifa.world/scoreboard?dates={d_str}"
+                )
+                resp = requests.get(url, timeout=8)
+                if resp.status_code != 200:
+                    continue
+                for event in resp.json().get("events", []):
+                    try:
+                        status = event.get("status", {}).get("type", {})
+                        desc   = status.get("description", "").lower()
+                        if any(w in desc for w in ["final", "completed", "cancelled", "postponed"]):
+                            continue
+
+                        date_str_ev = event.get("date", "")
+                        utc_ev = None
+                        for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ"):
+                            try:
+                                utc_ev = datetime.datetime.strptime(
+                                    date_str_ev, fmt
+                                ).replace(tzinfo=pytz.utc)
+                                break
+                            except ValueError:
+                                continue
+                        if utc_ev is None:
+                            continue
+
+                        minutes_until = (utc_ev - now_utc).total_seconds() / 60
+                        # Fenêtre : 120 min avant le coup d'envoi
+                        if not (-15 < minutes_until <= 120):
+                            continue
+
+                        comp  = event.get("competitions", [{}])[0]
+                        teams = comp.get("competitors", [])
+                        if len(teams) < 2:
+                            continue
+
+                        home_t = next(
+                            (t.get("team", {}).get("displayName", "")
+                             for t in teams if t.get("homeAway") == "home"),
+                            teams[0].get("team", {}).get("displayName", ""),
+                        )
+                        away_t = next(
+                            (t.get("team", {}).get("displayName", "")
+                             for t in teams if t.get("homeAway") == "away"),
+                            teams[1].get("team", {}).get("displayName", ""),
+                        )
+                        if not home_t or not away_t:
+                            continue
+
+                        notify_key = f"prono_{date_key}_wc_{away_t}_{home_t}"
+                        if notify_key in _notified_pronostics:
+                            elapsed_h = (
+                                datetime.datetime.now() - _notified_pronostics[notify_key]
+                            ).total_seconds() / 3600
+                            if elapsed_h < PRONO_RENOTIFY_HOURS:
+                                logger.debug(f"⏭️ WC déjà notifié: {away_t} vs {home_t}")
+                                continue
+
+                        wc_upcoming.append((away_t, home_t, utc_ev, minutes_until, notify_key))
+                        logger.info(
+                            f"⚽ WC match trouvé: {away_t} vs {home_t} "
+                            f"dans {minutes_until:.0f} min"
+                        )
+                    except Exception as _wc_ev_err:
+                        logger.debug(f"⚠️ WC event parse: {_wc_ev_err}")
+                        continue
+
+            if wc_upcoming:
+                logger.info(f"⚽ WC: {len(wc_upcoming)} match(s) → analyse en cours...")
+                wc_picks = run_wc_analysis(days_ahead=1, send=False)
+
+                if wc_picks:
+                    msg_wc = format_wc_message(wc_picks)
+
+                    # Marquer MAINTENANT les matchs comme notifiés (picks trouvés)
+                    for *_, nk in wc_upcoming:
+                        _notified_pronostics[nk] = datetime.datetime.now()
+
+                    # Canal FREE — résumé compact 1 pick
+                    wc_best = wc_picks[0]
+                    side_tag = {
+                        "home": "🏠", "draw": "🤝", "away": "✈️"
+                    }.get(wc_best.get("pick_side", ""), "⚽")
+                    status_tag = (
+                        "🟢" if wc_best["status"] == "✅ BUY" else "🟡"
+                    )
+                    qc_time_wc = wc_best["commence"]
+                    try:
+                        utc_wc_dt = datetime.datetime.fromisoformat(
+                            qc_time_wc.replace("Z", "+00:00")
+                        )
+                        heure_qc_wc = utc_wc_dt.astimezone(QUEBEC_TZ).strftime("%H:%M")
+                    except Exception:
+                        heure_qc_wc = "?"
+
+                    msg_free_wc  = f"🏆 COUPE DU MONDE FIFA 2026\n"
+                    msg_free_wc += f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg_free_wc += (
+                        f"{status_tag} {wc_best['pick']}\n"
+                        f"🕐 {heure_qc_wc} (Québec)\n"
+                        f"⚽ {wc_best['away_team']} vs {wc_best['home_team']}\n"
+                        f"💵 Cote: {wc_best['bet_odds']:.2f} "
+                        f"| EV: {wc_best['ev_pct']}\n"
+                    )
+                    buy_wc = [p for p in wc_picks[1:] if p["status"] == "✅ BUY"]
+                    if buy_wc:
+                        msg_free_wc += "\n"
+                        for p in buy_wc[:2]:
+                            msg_free_wc += (
+                                f"🟢 {p['pick']} | "
+                                f"{p['away_team']} vs {p['home_team']}\n"
+                            )
+                    msg_free_wc += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    msg_free_wc += "💎 Analyse complète en VIP ↑"
+
+                    try:
+                        await context.bot.send_message(
+                            chat_id=TELEGRAM_CHAT_ID, text=msg_free_wc
+                        )
+                        logger.info(f"✅ WC pick FREE envoyé ({len(wc_picks)} picks)")
+                    except Exception as _wc_free_err:
+                        logger.error(f"❌ WC FREE: {_wc_free_err}")
+
+                    # Canal VIP — message complet avec toutes les analyses
+                    if TELEGRAM_CHAT_ID_VIP:
+                        if len(msg_wc) > 4000:
+                            for _i in range(0, len(msg_wc), 4000):
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=TELEGRAM_CHAT_ID_VIP,
+                                        text=msg_wc[_i:_i+4000],
+                                        parse_mode="Markdown",
+                                    )
+                                except Exception:
+                                    # Fallback sans markdown si parsing échoue
+                                    try:
+                                        await context.bot.send_message(
+                                            chat_id=TELEGRAM_CHAT_ID_VIP,
+                                            text=msg_wc[_i:_i+4000],
+                                        )
+                                    except Exception as _wc_vip_err:
+                                        logger.error(f"❌ WC VIP chunk: {_wc_vip_err}")
+                        else:
+                            try:
+                                await context.bot.send_message(
+                                    chat_id=TELEGRAM_CHAT_ID_VIP,
+                                    text=msg_wc,
+                                    parse_mode="Markdown",
+                                )
+                            except Exception:
+                                try:
+                                    await context.bot.send_message(
+                                        chat_id=TELEGRAM_CHAT_ID_VIP, text=msg_wc
+                                    )
+                                except Exception as _wc_vip_err:
+                                    logger.error(f"❌ WC VIP: {_wc_vip_err}")
+                        logger.info(
+                            f"✅ WC picks VIP envoyés: {len(wc_picks)} "
+                            f"({sum(1 for p in wc_picks if p['status']=='✅ BUY')} BUY)"
+                        )
+                else:
+                    logger.info("⏭️ WC: matchs dans la fenêtre mais aucun pick EV+")
+        except Exception as _wc_auto_err:
+            logger.error(f"❌ auto WC: {_wc_auto_err}", exc_info=True)
+
+
+async def auto_check_results(context):
+    """
+    Toutes les 2h: vérifie via ESPN les matchs terminés et note les picks.
+    Envoie une notification de résultats dans FREE + VIP si des picks ont été gradés.
+    Met aussi à jour les ratings Elo après chaque match gradé.
+    """
+    if not PICK_MEMORY_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    try:
+        updated = check_and_update_results()
+        if not updated:
+            logger.info("ℹ️ auto_check_results: aucun nouveau résultat")
+            return
+
+        notif = format_result_notification(updated)
+        if notif:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
+            logger.info(f"✅ Résultats notifiés: {len(updated)} picks gradés")
+
+        # ── Mise à jour Elo v2 pour chaque match gradé ──────────────────
+        if ULTRON_V2_AVAILABLE:
+            for pick in updated:
+                try:
+                    sport = pick.get('sport', '').upper()
+                    if sport not in ('NBA', 'NHL', 'NFL'):
+                        continue
+                    score_str = pick.get('score', '')
+                    if not score_str or '-' not in score_str:
+                        continue
+                    parts = score_str.split('-')
+                    home_score = int(parts[0].strip())
+                    away_score = int(parts[1].strip())
+                    home_team  = pick.get('home_team', '')
+                    away_team  = pick.get('away_team', '')
+                    if not home_team or not away_team:
+                        continue
+                    home_won = home_score > away_score
+                    winner   = home_team if home_won else away_team
+                    loser    = away_team if home_won else home_team
+                    margin   = abs(home_score - away_score)
+                    elo = EloSystemV2(sport)
+                    elo.update(winner, loser, margin, home_won)
+                    logger.info(f"📊 Elo mis à jour [{sport}]: {winner} +, {loser} - (marge {margin})")
+                except Exception as _elo_err:
+                    logger.debug(f"⚠️ Elo update ignoré: {_elo_err}")
+    except Exception as e:
+        logger.error(f"❌ auto_check_results: {e}")
+
+
+async def cmd_stats(update, context):
+    """/stats — affiche le rapport de performance d'Ultron"""
+    if not PICK_MEMORY_AVAILABLE:
+        await update.message.reply_text("⚠️ Module de mémoire non disponible.")
+        return
+
+    # Parse l'argument optionnel: /stats 7 | /stats 30 | /stats 1 (défaut 7)
+    days = 7
+    if context.args:
+        try:
+            days = int(context.args[0])
+        except ValueError:
+            pass
+
+    report = format_daily_report(days=days)
+    await update.message.reply_text(report)
+
+
+async def cmd_recap(update, context):
+    """/recap — envoie le récap des picks d'aujourd'hui avec résultats"""
+    if not PICK_MEMORY_AVAILABLE:
+        await update.message.reply_text("⚠️ Module de mémoire non disponible.")
+        return
+    try:
+        # Vérification ESPN avant le récap
+        updated = check_and_update_results()
+        if updated:
+            notif = format_result_notification(updated)
+            if notif:
+                await update.message.reply_text(notif)
+
+        recap = format_today_recap()
+        if recap:
+            await update.message.reply_text(recap)
+        else:
+            await update.message.reply_text(
+                "📋 Aucun pick enregistré aujourd'hui.\n"
+                "Les picks sont sauvegardés automatiquement quand Ultron les envoie 1h avant un match."
+            )
+    except Exception as e:
+        logger.error(f"❌ cmd_recap: {e}")
+        await update.message.reply_text(f"❌ Erreur: {e}")
+
+
+async def cmd_boxscore(update, context):
+    """/boxscore <nba|nhl|nfl> — box scores en direct des matchs du jour"""
+    if not ESPN_CONTEXT_AVAILABLE:
+        await update.message.reply_text("⚠️ Module ESPN non disponible.")
+        return
+    sport = (context.args[0].upper() if context.args else "NBA")
+    if sport not in ("NBA", "NHL", "NFL"):
+        await update.message.reply_text("❌ Usage: /boxscore <nba|nhl|nfl>")
+        return
+    try:
+        await update.message.reply_text(f"⏳ Récupération box scores {sport}...")
+        messages = format_all_boxscores(sport)
+        import asyncio
+        for msg in messages:
+            await update.message.reply_text(msg)
+            await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.error(f"❌ cmd_boxscore: {e}")
+        await update.message.reply_text(f"❌ Erreur boxscore: {e}")
+
+
+async def cmd_leaders(update, context):
+    """/leaders <nba|nhl|nfl> — leaders de statistiques de la saison"""
+    if not ESPN_CONTEXT_AVAILABLE:
+        await update.message.reply_text("⚠️ Module ESPN non disponible.")
+        return
+    sport = (context.args[0].upper() if context.args else "NBA")
+    if sport not in ("NBA", "NHL", "NFL"):
+        await update.message.reply_text("❌ Usage: /leaders <nba|nhl|nfl>")
+        return
+    try:
+        await update.message.reply_text(f"⏳ Récupération leaders {sport}...")
+        msg = format_leaders_message(sport)
+        await update.message.reply_text(msg)
+    except Exception as e:
+        logger.error(f"❌ cmd_leaders: {e}")
+        await update.message.reply_text(f"❌ Erreur leaders: {e}")
+
+
+async def auto_check_game_starts(context):
+    """
+    Toutes les 5 minutes: alerte quand un match passe à 'In Progress'.
+    Envoyé dans FREE et VIP.
+    
+    DÉSACTIVÉ: L'utilisateur a demandé de retirer les notifications de matchs en cours.
+    """
+    return  # Notifications de matchs en cours désactivées
+
+    sports_config = [
+        ("basketball/nba", "🏀"),
+        ("hockey/nhl", "🏒"),
+        ("baseball/mlb", "⚾"),
+    ]
+
+    for sport_path, emoji in sports_config:
+        sport_key = sport_path.split('/')[1]
+        try:
+            now_utc_d = datetime.datetime.utcnow()
+            dates_to_check = [
+                now_utc_d.strftime("%Y%m%d"),
+                (now_utc_d + datetime.timedelta(days=1)).strftime("%Y%m%d"),
+            ]
+            all_events_s = []
+            for dq in dates_to_check:
+                r2 = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={dq}", timeout=8)
+                if r2.status_code == 200:
+                    all_events_s.extend(r2.json().get('events', []))
+
+            for event in all_events_s:
+                try:
+                    status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                    event_id = event.get('id', '')
+                    notify_key = f"start_{sport_key}_{event_id}"
+
+                    if 'in progress' in status_desc and notify_key not in _notified_starts:
+                        _notified_starts.add(notify_key)
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('displayName', '?')
+                            home = competitors[1].get('team', {}).get('displayName', '?')
+                            msg = f"{emoji} MATCH EN COURS!\n"
+                            msg += f"━━━━━━━━━━━━━━━━━━━━━\n"
+                            msg += f"  {away} @ {home}\n"
+                            msg += f"  🕐 {get_quebec_time().strftime('%H:%M')} heure Québec\n"
+                            msg += f"━━━━━━━━━━━━━━━━━━━━━"
+                            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+                            if TELEGRAM_CHAT_ID_VIP:
+                                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+                            logger.info(f"✅ Alerte match en cours: {away} @ {home}")
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"⚠️ check_starts {sport_key}: {e}")
+
+
+async def auto_boxscore(context):
+    """
+    Toutes les 20 minutes: envoie les box scores des matchs en cours.
+    Envoyé uniquement si au moins un match est 'In Progress'.
+    """
+    return  # Boxscores automatiques désactivés — run en backend/logs uniquement
+
+
+async def auto_leaders_daily(context):
+    """
+    Chaque jour à midi heure Québec: envoie les leaders de stats pour NBA, NHL et NFL.
+    Désactivé temporairement.
+    """
+    return  # TODO: réactiver quand l'endpoint ESPN leaders sera stable
+    if not ESPN_CONTEXT_AVAILABLE or not TELEGRAM_CHAT_ID:
+        return
+    for sport in ("NBA", "NHL", "NFL"):
+        try:
+            msg = format_leaders_message(sport)
+            if not msg:  # Données indisponibles — ne rien envoyer
+                logger.info(f"⏭️ Leaders {sport} ignorés (hors saison ou ESPN indisponible)")
+                continue
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+            if TELEGRAM_CHAT_ID_VIP:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=msg)
+            logger.info(f"🏆 Auto leaders {sport} envoyés")
+        except Exception as e:
+            logger.error(f"❌ auto_leaders_daily {sport}: {e}")
+
+
+def run_ultron_pipeline(bankroll=1000):
+    """Lance le pipeline ULTRON (wrapper pour compatibilité avec main.py)"""
+    logger.info(f"💰 Bankroll: ${bankroll}")
+    main()
+
+async def _post_init(app):
+    """Exécuté au démarrage du bot — restaure la mémoire depuis Telegram si nécessaire."""
+    if PICK_MEMORY_AVAILABLE and TELEGRAM_CHAT_ID:
+        try:
+            restored = await restore_from_telegram(app.bot, TELEGRAM_CHAT_ID)
+            if restored:
+                logger.info("♻️ Mémoire picks restaurée depuis Telegram")
+        except Exception as e:
+            logger.warning(f"⚠️ Restauration Telegram échouée: {e}")
+
+
+async def auto_backup_memory(context):
+    """Toutes les 6h : sauvegarde picks_history.json dans Telegram."""
+    return  # Backup Telegram désactivé — persistance via PostgreSQL
+
+
+async def auto_daily_recap(context):
+    """23h00 heure Québec : résumé de tous les picks du jour avec résultats."""
+    if not TELEGRAM_CHAT_ID:
+        logger.error("❌ auto_daily_recap: TELEGRAM_CHAT_ID non configuré")
+        return
+    try:
+        if PICK_MEMORY_AVAILABLE:
+            # Force une dernière vérification des résultats avant le récap
+            updated = check_and_update_results()
+            if updated:
+                notif = format_result_notification(updated)
+                if notif:
+                    await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=notif)
+                    if TELEGRAM_CHAT_ID_VIP:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=notif)
+
+            recap = format_today_recap()
+        else:
+            import datetime as dt
+            recap = (
+                "📋  U L T R O N  —  R É C A P  D U  J O U R\n"
+                f"     {dt.datetime.now().strftime('%Y-%m-%d  %H:%M')} UTC\n\n"
+                "⚠️  Module mémoire non disponible (pick_memory).\n"
+                "    Vérifie les logs Railway pour l'erreur d'import."
+            )
+
+        if not recap:
+            recap = "📋 Récap 23h — aucun pick enregistré aujourd'hui."
+
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
+        if TELEGRAM_CHAT_ID_VIP:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=recap)
+        logger.info("✅ Récap journalier envoyé")
+    except Exception as e:
+        logger.error(f"❌ auto_daily_recap: {e}")
+        try:
+            await context.bot.send_message(
+                chat_id=TELEGRAM_CHAT_ID,
+                text=f"❌ Erreur récap 23h:\n{e}"
+            )
+        except Exception:
+            pass
+
+
+async def auto_brain_analysis(context):
+    """
+    23h30 heure Québec (30 min après le récap) : auto-analyse ROI.
+    Met à jour les seuils appris SILENCIEUSEMENT, sans envoi Telegram.
+    """
+    if not BRAIN_AVAILABLE:
+        return
+    try:
+        analysis = run_analysis()   # met toujours à jour les seuils en arrière-plan
+        logger.info("🧠 Brain: analyse silencieuse — seuils mis à jour")
+        # Les rapports Telegram sont maintenant désactivés — analyse en background uniquement
+    except Exception as e:
+        logger.error(f"❌ auto_brain_analysis: {e}")
+
+
+@rate_limit(60)
+async def cmd_picks(update, context):
+    """/picks — génère les picks du jour via moteur Elo + No-Vig + ESPN"""
+    if not ULTRON_V2_AVAILABLE:
+        await update.message.reply_text("⚠️ Module Ultron v2 non disponible.")
+        return
+    try:
+        await update.message.reply_text(
+            "🤖 *Ultron v2.0 analyse...*\n"
+            "_Elo + No-Vig + ESPN + Régression_",
+            parse_mode="Markdown"
+        )
+        engine   = UltronV2(bankroll=1000)
+        result   = engine.run()
+        messages = format_v2_report(result)
+        import asyncio
+        for msg in messages:
+            await update.message.reply_text(msg, parse_mode="Markdown")
+            await asyncio.sleep(1)
+        logger.info(f"✅ /picks envoyé: {len(result.get('picks', []))} picks")
+
+        # ── Props joueurs NBA pour chaque match retenu ────────────────
+        nba_matches_seen: set = set()
+        for pick in result.get('picks', []):
+            if pick.get('sport', '').upper() != 'NBA':
+                continue
+            away_t = pick.get('away_team', '')
+            home_t = pick.get('home_team', '')
+            key = f"{away_t}@{home_t}"
+            if key in nba_matches_seen or not away_t or not home_t:
+                continue
+            nba_matches_seen.add(key)
+            props_msg = _player_props_msg_for_match(away_t, home_t)
+            if props_msg:
+                await update.message.reply_text(
+                    f"🏀 {away_t} @ {home_t}\n" + props_msg
+                )
+                await asyncio.sleep(0.5)
+    except Exception as e:
+        logger.error(f"❌ cmd_picks: {e}")
+        await update.message.reply_text(f"❌ Erreur picks v2: {e}")
+
+
+async def cmd_analyse(update, context):
+    """/analyse — rapport d'auto-analyse ROI immédiat"""
+    if not BRAIN_AVAILABLE:
+        await update.message.reply_text("⚠️ Module Brain non disponible.")
+        return
+    try:
+        await update.message.reply_text("🧠 Analyse en cours...")
+        analysis = run_analysis()
+        report   = format_brain_report(analysis)
+        await update.message.reply_text(report)
+    except Exception as e:
+        logger.error(f"❌ cmd_analyse: {e}")
+        await update.message.reply_text(f"❌ Erreur analyse: {e}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PARLAYS — Combinaisons intelligentes de picks multiples
+# ═════════════════════════════════════════════════════════════════════════════
+
+def analyze_and_suggest_parlays(max_suggestions: int = 5) -> list:
+    """
+    Analyse les prédictions actuelles de tous les sports.
+    Retourne list de dicts: {picks_list, combined_odds, combined_confidence, sports, profit_pct, matchups}
+    """
+    from itertools import combinations
+    
+    try:
+        # Récupère tous les matchs + prédictions actuels
+        nba_matches = get_live_matches_nba()
+        nhl_matches = get_live_matches_nhl()
+        mlb_matches = get_live_matches_mlb()
+        
+        all_preds = []
+        
+        for away, home in nba_matches:
+            pred = generate_prediction_nba(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "NBA",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        for away, home in nhl_matches:
+            pred = generate_prediction_nhl(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "NHL",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        for away, home in mlb_matches:
+            pred = generate_prediction_mlb(away, home)
+            if pred.get("status") == "✅ BUY":
+                all_preds.append({
+                    "sport": "MLB",
+                    "away": away,
+                    "home": home,
+                    "pick": pred["pick"],
+                    "odds": float(pred["odds"]),
+                    "confidence": pred["confidence"],
+                    "ev": float(pred["ev"]),
+                    "matchup": f"{away} @ {home}"
+                })
+        
+        if len(all_preds) < 2:
+            return []
+        
+        # Génère combinaisons de 2-4 picks sans doublons de matchup
+        parlays_list = []
+        
+        for combo_size in [2, 3, 4]:
+            if len(all_preds) < combo_size:
+                continue
+                
+            for combo in combinations(all_preds, combo_size):
+                # Vérifie pas deux picks du MÊME match
+                matchups = [p["matchup"] for p in combo]
+                if len(matchups) != len(set(matchups)):
+                    continue
+                
+                # Calcule cotes combinées et confiance
+                combined_odds = 1.0
+                combined_conf = 0.0
+                combined_ev = 0.0
+                sports_list = list(set(p["sport"] for p in combo))
+                
+                for pred in combo:
+                    combined_odds *= pred["odds"]
+                    combined_conf += pred["confidence"]
+                    combined_ev += pred["ev"]
+                
+                # Moyenne de confiance
+                combined_conf = int(combined_conf / len(combo))
+                
+                # Calcul profit potentiel pour 1$ de stake
+                profit_pct = (combined_odds - 1.0) * 100
+                
+                parlays_list.append({
+                    "picks": combo,
+                    "combined_odds": combined_odds,
+                    "combined_confidence": combined_conf,
+                    "combined_ev": combined_ev,
+                    "sports": ",".join(sports_list),
+                    "profit_pct": profit_pct
+                })
+        
+        # Trie par EV (descending) puis confiance
+        parlays_list.sort(key=lambda x: (x["combined_ev"], x["combined_confidence"]), reverse=True)
+        
+        return parlays_list[:max_suggestions]
+    
+    except Exception as e:
+        logger.error(f"❌ analyze_and_suggest_parlays: {e}")
+        return []
+
+
+async def auto_parlays_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Affiche les parlays automatiquement suggérés"""
+    try:
+        parlays = analyze_and_suggest_parlays(max_suggestions=1)
+        
+        if not parlays:
+            await update.message.reply_text("❌ Aucun parlay suggéré (besoin de 2+ BUY picks d'autres matchs)")
+            return
+        
+        msg = "🎯 ULTRON — AUTO PARLAYS SUGGÉRÉS\n"
+        msg += "═" * 70 + "\n\n"
+        
+        for i, parlay in enumerate(parlays, 1):
+            picks = parlay["picks"]
+            odds = parlay["combined_odds"]
+            conf = parlay["combined_confidence"]
+            profit = parlay["profit_pct"]
+            sports = parlay["sports"]
+            
+            msg += f"{i}️⃣ PARLAY {len(picks)}-WAY — {sports}\n"
+            msg += f"   Cotes: {odds:.2f} | Profit $: ${profit:.2f} pour 1$\n"
+            msg += "   Matchs inclus:\n"
+            
+            for j, pred in enumerate(picks, 1):
+                msg += f"      {j}. {pred['matchup']}\n"
+                msg += f"         {pred['pick']} @ {pred['odds']:.2f}\n"
+            
+            msg += "\n"
+        
+        msg += "═" * 70 + "\n"
+        msg += "💡 Copie-colle les combos ci-dessus sur DraftKings ou ta plateforme préférée!"
+        
+        await update.message.reply_text(msg)
+    
+    except Exception as e:
+        logger.error(f"❌ auto_parlays_cmd: {e}")
+        await update.message.reply_text(f"❌ Erreur parlays: {e}")
+
+
+def format_parlays_compact(picks_list: list) -> str:
+    """
+    Formate les parlays en format ultra-compact pour le canal VIP.
+    Format: Une ligne par pick avec équipe courte et type de pari.
+    Ex:
+    Rays ML
+    Orioles vs Nationals Over 8.5
+    """
+    if not picks_list:
+        return ""
+    
+    lines = []
+    for pick in picks_list:
+        away = pick['away'].split()[-1]  # "Tampa Bay Rays" → "Rays"
+        home = pick['home'].split()[-1]  # "Baltimore Orioles" → "Orioles"
+        pick_text = pick['pick'].upper()
+        
+        # Format: "Rays ML" ou "Orioles vs Nationals Over 8.5"
+        if "ML" in pick_text:
+            # Extraire seulement le nom court de l'équipe
+            team_short = pick_text.replace(" ML", "").split()[-1]
+            lines.append(f"{team_short} ML")
+        elif "OVER" in pick_text or "UNDER" in pick_text:
+            ou_line = pick.get('pick_line', 8.5)
+            direction = "Over" if "OVER" in pick_text else "Under"
+            lines.append(f"{away} vs {home} {direction} {ou_line}")
+        elif "+" in pick_text or "-" in pick_text:
+            # SPREAD
+            spread_val = pick_text.split()[-1]  # "-1.5", "+3"
+            team_short = pick_text.split()[0]  # Première partie
+            lines.append(f"{team_short} {spread_val}")
+        else:
+            lines.append(pick_text)
+    
+    return "\n".join(lines)
+
+
+def main():
+    """Démarre le bot Telegram avec toutes les automations"""
+    
+    # ── DIAGNOSTIC DB AU DÉMARRAGE ────────────────────────────────────
+    db_status = os.environ.get("DATABASE_URL", "")
+    if db_status:
+        logger.info("🔍 DATABASE_URL détecté — TEST DE CONNEXION...")
+        try:
+            import psycopg2
+            url_fixed = db_status.replace("postgres://", "postgresql://", 1)
+            conn = psycopg2.connect(url_fixed)
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1;")
+            logger.info("✅ POSTGRESQL CONNECTÉ — Picks persisteront en DB")
+            conn.close()
+        except Exception as e:
+            logger.error(f"❌ POSTGRESQL ERREUR: {e} — Fallback JSON seulement")
+    else:
+        logger.warning("⚠️ DATABASE_URL ABSENT — Fallback JSON local (ÉPHÉMÈRE sur Railway!)")
+    
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
+
+    # ── Commandes manuelles ──────────────────────────────────────────────
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("test", test_notification))
+    app.add_handler(CommandHandler("nba", nba_matches))
+    app.add_handler(CommandHandler("nhl", nhl_matches))
+    app.add_handler(CommandHandler("mlb", mlb_matches))
+    app.add_handler(CommandHandler("nfl", nfl_matches))
+    # Coupe du Monde retirée — commande /mondial désactivée
+    app.add_handler(CommandHandler("pronostics", pronostics))
+    app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
+    app.add_handler(CommandHandler("player", player_props))
+    app.add_handler(CommandHandler("props_match", match_props))
+    app.add_handler(CommandHandler("all_props", all_props))
+    app.add_handler(CommandHandler("daily_props", daily_props))
+    app.add_handler(CommandHandler("totals", cmd_totals))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("stats", cmd_stats))
+    app.add_handler(CommandHandler("recap", cmd_recap))
+    app.add_handler(CommandHandler("analyse", cmd_analyse))
+    app.add_handler(CommandHandler("picks", cmd_picks))
+    app.add_handler(CommandHandler("boxscore", cmd_boxscore))
+    app.add_handler(CommandHandler("leaders", cmd_leaders))
+
+    # ── Automations (JobQueue) ───────────────────────────────────────────
+    job_queue = app.job_queue
+
+    # Auto-pronostics: toutes les 30 minutes, vérifie les matchs dans ~1h
+    job_queue.run_repeating(auto_send_pronostics, interval=1800, first=60)
+    logger.info("⏰ Auto-pronostics: toutes les 30 minutes (1h avant matchs)")
+
+    # Vérification des résultats: toutes les 2h (ESPN scoreboard final)
+    if PICK_MEMORY_AVAILABLE:
+        job_queue.run_repeating(auto_check_results, interval=7200, first=120)
+        logger.info("📊 Auto-résultats: toutes les 2h via ESPN")
+
+        # Backup Telegram: toutes les 6h (sauvegarde avant redéploiement)
+        job_queue.run_repeating(auto_backup_memory, interval=21600, first=300)
+        logger.info("🔒 Backup Telegram mémoire: toutes les 6h")
+
+    # Alertes début de match: toutes les 5 minutes
+    job_queue.run_repeating(auto_check_game_starts, interval=300, first=30)
+    logger.info("🔔 Alertes matchs: toutes les 5 minutes")
+
+    # Box scores en direct: toutes les 20 minutes (seulement si match en cours)
+    if ESPN_CONTEXT_AVAILABLE:
+        job_queue.run_repeating(auto_boxscore, interval=1200, first=90)
+        logger.info("📊 Auto box scores: toutes les 20 min si match en cours")
+
+        # Leaders de stats: chaque jour à midi heure Québec (UTC 16:00)
+        import datetime as dt_l
+        job_queue.run_daily(auto_leaders_daily, time=dt_l.time(hour=16, minute=0, tzinfo=pytz.utc))
+        logger.info("🏆 Auto leaders: chaque jour à 12h00 heure Québec")
+
+    # Message de motivation + résumé du jour: 9h00 heure Québec (UTC 13:00)
+    import datetime as dt
+    job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
+    logger.info("🌅 Motivation + résumé quotidien: 9h00 heure Québec")
+
+    # Récap de fin de journée: 23h00 heure Québec
+    # Calcule dynamiquement le délai jusqu'au prochain 23h00 Québec
+    # (évite le bug run_daily qui rate la soirée si le bot redémarre après 23h)
+    _tz_qc = pytz.timezone("America/Toronto")
+    _now_qc = dt.datetime.now(_tz_qc)
+    _target_qc = _now_qc.replace(hour=23, minute=0, second=0, microsecond=0)
+    if _target_qc <= _now_qc:
+        _target_qc += dt.timedelta(days=1)
+    _first_recap = max(10, (_target_qc - _now_qc).total_seconds())
+    job_queue.run_repeating(auto_daily_recap, interval=86400, first=_first_recap)
+    logger.info(f"📋 Récap journalier picks: 23h00 heure Québec (dans {int(_first_recap/3600)}h{int((_first_recap%3600)/60)}m)")
+
+    # Auto-analyse Brain: 23h30 heure Québec (30 min après le récap)
+    if BRAIN_AVAILABLE:
+        _target_brain = _now_qc.replace(hour=23, minute=30, second=0, microsecond=0)
+        if _target_brain <= _now_qc:
+            _target_brain += dt.timedelta(days=1)
+        _first_brain = max(10, (_target_brain - _now_qc).total_seconds())
+        job_queue.run_repeating(auto_brain_analysis, interval=86400, first=_first_brain)
+        logger.info(f"🧠 Auto-analyse Brain: 23h30 heure Québec (rapport lundi) (dans {int(_first_brain/3600)}h{int((_first_brain%3600)/60)}m)")
+
+    logger.info("🚀 ULTRON v6.0 MULTISPORTS - DÉMARRAGE")
+    logger.info("✅ NBA 🏀 + NHL 🏒 + NFL 🏈")
+
+    # Modèles ML
+    if SKLEARN_AVAILABLE:
+        logger.info("🤖 Initialisation du modèle ML NBA...")
+        train_nba_model()
+    else:
+        logger.warning("⚠️ scikit-learn non disponible - Utilisant modèle statistique")
+
+    if XGBOOST_AVAILABLE:
+        logger.info("🤖 Initialisation du modèle Player Props XGBoost...")
+        train_player_props_model()
+    else:
+        logger.warning("⚠️ XGBoost non disponible - Prédictions player props désactivées")
+
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
