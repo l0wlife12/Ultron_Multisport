@@ -81,6 +81,8 @@ try:
         check_and_update_results,
         format_daily_report,
         format_today_recap,
+        get_last_recap_date,
+        set_last_recap_date,
         format_result_notification,
         backup_to_telegram,
         restore_from_telegram,
@@ -5104,6 +5106,155 @@ def _build_picks_for_sport(sport: str):
     return picks
 
 
+def _gather_all_games_today(window_hours: float = 20.0) -> list:
+    """
+    Rassemble tous les matchs (NBA/NHL/MLB/NFL) qui commencent dans les
+    prochaines `window_hours` heures, peu importe le sport.
+    Retourne: [(sport_key, emoji, away, home)]
+    """
+    sports_config = [
+        ("basketball/nba", "nba", "🏀"),
+        ("hockey/nhl", "nhl", "🏒"),
+        ("baseball/mlb", "mlb", "⚾"),
+        ("football/nfl", "nfl", "🏈"),
+    ]
+
+    now_utc = datetime.datetime.now(pytz.utc)
+    today_str = now_utc.strftime("%Y%m%d")
+    tomorrow_str = (now_utc + datetime.timedelta(days=1)).strftime("%Y%m%d")
+    games = []
+
+    for sport_path, sport_key, emoji in sports_config:
+        try:
+            all_events = []
+            for date_str_q in (today_str, tomorrow_str):
+                url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_path}/scoreboard?dates={date_str_q}"
+                resp = requests.get(url, timeout=8)
+                if resp.status_code == 200:
+                    all_events.extend(resp.json().get('events', []))
+
+            for event in all_events:
+                try:
+                    status_desc = event.get('status', {}).get('type', {}).get('description', '').lower()
+                    if any(s in status_desc for s in ['final', 'completed', 'postponed', 'cancelled']):
+                        continue
+
+                    date_str = event.get('date', '')
+                    utc_dt = None
+                    for fmt in ("%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
+                        try:
+                            utc_dt = datetime.datetime.strptime(date_str, fmt).replace(tzinfo=pytz.utc)
+                            break
+                        except ValueError:
+                            continue
+                    if utc_dt is None:
+                        continue
+
+                    hours_until = (utc_dt - now_utc).total_seconds() / 3600
+                    # Matchs pas encore commencés, dans la fenêtre du jour
+                    if 0 <= hours_until <= window_hours:
+                        comp = event.get('competitions', [{}])[0]
+                        competitors = comp.get('competitors', [])
+                        if len(competitors) >= 2:
+                            away = competitors[0].get('team', {}).get('displayName', '?')
+                            home = competitors[1].get('team', {}).get('displayName', '?')
+                            games.append((sport_key, emoji, away, home))
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.debug(f"⚠️ _gather_all_games_today [{sport_key}]: {e}")
+            continue
+
+    return games
+
+
+async def auto_daily_top5_free(context):
+    """
+    11h00 heure Québec : sélectionne les 5 meilleurs picks PAR SPORT
+    (NBA, NHL, MLB, NFL séparément, classés par confiance ML) et les
+    envoie en UN SEUL message au canal FREE. Remplace l'ancien envoi au
+    fil de l'eau (1 pick à chaque match qui approchait).
+    """
+    if not TELEGRAM_CHAT_ID:
+        return
+
+    try:
+        games = _gather_all_games_today()
+        if not games:
+            logger.info("ℹ️ auto_daily_top5_free: aucun match aujourd'hui")
+            return
+
+        gen_fn = {
+            "nba": generate_prediction_nba,
+            "nhl": generate_prediction_nhl,
+            "mlb": generate_prediction_mlb,
+            "nfl": generate_prediction_nfl,
+        }
+        sport_display = {
+            "nba": ("🏀", "NBA"),
+            "nhl": ("🏒", "NHL"),
+            "mlb": ("⚾", "MLB"),
+            "nfl": ("🏈", "NFL"),
+        }
+
+        # Regrouper les candidats par sport
+        by_sport: dict = {"nba": [], "nhl": [], "mlb": [], "nfl": []}
+        for sport_key, emoji, away, home in games:
+            try:
+                pred = gen_fn[sport_key](away, home)
+                by_sport[sport_key].append({
+                    "away": away,
+                    "home": home,
+                    "pick": pred["ml_pick"],
+                    "odds": pred["ml_odds"],
+                    "confidence": pred["ml_confidence"],
+                })
+            except Exception as e:
+                logger.debug(f"⚠️ auto_daily_top5_free prediction [{sport_key}] {away}@{home}: {e}")
+                continue
+
+        total_candidates = sum(len(v) for v in by_sport.values())
+        if total_candidates == 0:
+            logger.info("ℹ️ auto_daily_top5_free: aucune prédiction générée")
+            return
+
+        quebec_time = get_quebec_time()
+        msg = "💎 ULTRON — TOP 5 DU JOUR PAR SPORT\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += f"🕐 {quebec_time.strftime('%A %d %B %Y')}\n"
+        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+
+        total_sent = 0
+        for sport_key in ("nba", "nhl", "mlb", "nfl"):
+            picks = by_sport[sport_key]
+            if not picks:
+                continue
+            picks.sort(key=lambda c: c["confidence"], reverse=True)
+            top5 = picks[:5]
+            emoji, label = sport_display[sport_key]
+
+            msg += f"\n{emoji} {label}\n"
+            for i, c in enumerate(top5, 1):
+                tier = confidence_tier_emoji(c["confidence"])
+                pick_display = c["pick"]
+                if " ML" in pick_display:
+                    team_name = pick_display.replace(" ML", "").split()[-1]
+                    pick_line = f"{team_name} ML"
+                else:
+                    pick_line = pick_display
+                msg += f"{i}. {tier} {pick_line} @ {c['odds']} — Confiance: {c['confidence']}/100\n"
+                total_sent += 1
+
+        msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        msg += "💎 Plus de picks + parlays en VIP ↑"
+
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg)
+        logger.info(f"✅ Top 5/sport FREE envoyé ({total_sent} picks parmi {total_candidates} candidats)")
+
+    except Exception as e:
+        logger.error(f"❌ auto_daily_top5_free: {e}")
+
+
 async def auto_daily_motivation(context):
     """9h00 Quebec: Message de motivation + résumé des matchs + alertes blessures"""
     if not TELEGRAM_CHAT_ID:
@@ -5621,43 +5772,9 @@ async def auto_send_pronostics(context):
     # (Génération automatique des parlays retirée du message VIP — le calcul
     # reste disponible via la commande manuelle /parlays)
 
-    # ── Canal FREE : 1 seul pick ML en format COMPACT ────────────────────
-    free = all_picks[0]
-    # Format compact: "Rays ML" ou "Dodgers +1.5" ou "Over 8.5"
-    pick_display = free['ml_pick']
-    if " ML" in pick_display:
-        team_name = pick_display.replace(" ML", "").split()[-1]
-        pick_line = f"{team_name} ML"
-    else:
-        pick_line = pick_display
-    
-    # Ajouter emoji de force (🔒 Lock / ⚡ Medium / 🎲 Risqué) basé sur la confiance
-    status_emoji = confidence_tier_emoji(free.get('ml_confidence', 0))
-    msg_free  = f"{status_emoji} {pick_line} — Confiance: {free.get('ml_confidence', 0)}/100\n"
-    # Ajouter les autres picks si multi-match
-    for p in all_picks[1:]:
-        status_e = confidence_tier_emoji(p.get('ml_confidence', 0))
-        pick_display2 = p['ml_pick']
-        if " ML" in pick_display2:
-            team_name = pick_display2.replace(" ML", "").split()[-1]
-            msg_free += f"{status_e} {team_name} ML — Confiance: {p.get('ml_confidence', 0)}/100\n"
-        else:
-            msg_free += f"{status_e} {pick_display2} — Confiance: {p.get('ml_confidence', 0)}/100\n"
-    
-    msg_free += "\n"
-    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg_free += "🏟️  " + free['label'] + "\n"
-    msg_free += f"🕐  {free['heure']} (Québec)  |  💼 {free.get('bookmaker', 'N/A')}\n"
-    msg_free += f"💵  Cote: {free['ml_odds']}\n"
-    msg_free += f"{free['ml_status']}\n"
-    msg_free += "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg_free += "💎 Parlays + autres picks en VIP ↑"
-
-    try:
-        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=msg_free)
-        logger.info(f"✅ Pick FREE envoyé: {free['label']}")
-    except Exception as e:
-        logger.error(f"❌ Erreur FREE: {e}")
+    # ── Canal FREE retiré d'ici — remplacé par auto_daily_top5_free()
+    # (un seul message par jour avec les 5 meilleurs picks, plutôt qu'un
+    # envoi à chaque match qui approche) ────────────────────────────────
 
     # ── Canal VIP : tous les picks + PARLAYS BONUS ──────────────────────
     if TELEGRAM_CHAT_ID_VIP:
@@ -6202,6 +6319,23 @@ async def auto_backup_memory(context):
     return  # Backup Telegram désactivé — persistance via PostgreSQL
 
 
+async def auto_recap_watchdog(context):
+    """Toutes les 10 min : si l'heure Québec >= 23h00 et que le récap du jour
+    n'est pas encore parti (redémarrage, job raté...), l'envoie maintenant.
+    Le marqueur est persisté en base : jamais de doublon, même après redéploiement."""
+    try:
+        now_qc = get_quebec_time()
+        if now_qc.hour < 23:
+            return
+        today = now_qc.strftime("%Y-%m-%d")
+        if PICK_MEMORY_AVAILABLE and get_last_recap_date() == today:
+            return
+        logger.info("📋 Watchdog: récap du jour non envoyé → envoi maintenant")
+        await auto_daily_recap(context)
+    except Exception as e:
+        logger.error(f"❌ auto_recap_watchdog: {e}")
+
+
 async def auto_daily_recap(context):
     """23h00 heure Québec : résumé de tous les picks du jour avec résultats."""
     if not TELEGRAM_CHAT_ID:
@@ -6234,6 +6368,8 @@ async def auto_daily_recap(context):
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=recap)
         if TELEGRAM_CHAT_ID_VIP:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=recap)
+        if PICK_MEMORY_AVAILABLE:
+            set_last_recap_date(get_quebec_time().strftime("%Y-%m-%d"))
         logger.info("✅ Récap journalier envoyé")
     except Exception as e:
         logger.error(f"❌ auto_daily_recap: {e}")
@@ -6589,6 +6725,10 @@ def main():
     job_queue.run_daily(auto_daily_motivation, time=dt.time(hour=13, minute=0, tzinfo=pytz.utc))
     logger.info("🌅 Motivation + résumé quotidien: 9h00 heure Québec")
 
+    # Top 5 du jour (canal FREE): 11h00 heure Québec (UTC 15:00)
+    job_queue.run_daily(auto_daily_top5_free, time=dt.time(hour=15, minute=0, tzinfo=pytz.utc))
+    logger.info("💎 Top 5 FREE: 11h00 heure Québec")
+
     # Récap de fin de journée: 23h00 heure Québec
     # Calcule dynamiquement le délai jusqu'au prochain 23h00 Québec
     # (évite le bug run_daily qui rate la soirée si le bot redémarre après 23h)
@@ -6598,8 +6738,10 @@ def main():
     if _target_qc <= _now_qc:
         _target_qc += dt.timedelta(days=1)
     _first_recap = max(10, (_target_qc - _now_qc).total_seconds())
-    job_queue.run_repeating(auto_daily_recap, interval=86400, first=_first_recap)
-    logger.info(f"📋 Récap journalier picks: 23h00 heure Québec (dans {int(_first_recap/3600)}h{int((_first_recap%3600)/60)}m)")
+    # Watchdog toutes les 10 min : envoie le récap dès 23h00 Québec (et rattrape
+    # un redémarrage tardif). Le marqueur en base évite les doublons.
+    job_queue.run_repeating(auto_recap_watchdog, interval=600, first=30)
+    logger.info(f"📋 Récap journalier picks: 23h00 heure Québec (watchdog 10 min, prochain run planifié dans {int(_first_recap/3600)}h{int((_first_recap%3600)/60)}m)")
 
     # Auto-analyse Brain: 23h30 heure Québec (30 min après le récap)
     if BRAIN_AVAILABLE:
