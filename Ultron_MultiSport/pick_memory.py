@@ -25,6 +25,26 @@ import uuid
 import requests
 import logging
 from datetime import datetime, timedelta
+try:
+    import pytz as _pytz
+    _QC_TZ = _pytz.timezone("America/Toronto")
+except Exception:  # pytz absent : fallback zoneinfo
+    from zoneinfo import ZoneInfo as _ZI
+    _QC_TZ = _ZI("America/Toronto")
+
+
+def _qc_now() -> datetime:
+    """Heure actuelle au Québec (le serveur Railway tourne en UTC)."""
+    return datetime.now(_QC_TZ)
+
+
+_JOURS_FR = ["LUNDI", "MARDI", "MERCREDI", "JEUDI", "VENDREDI", "SAMEDI", "DIMANCHE"]
+_MOIS_FR = ["JANVIER", "FÉVRIER", "MARS", "AVRIL", "MAI", "JUIN", "JUILLET",
+            "AOÛT", "SEPTEMBRE", "OCTOBRE", "NOVEMBRE", "DÉCEMBRE"]
+
+
+def _date_fr(d: datetime) -> str:
+    return f"{_JOURS_FR[d.weekday()]} {d.day} {_MOIS_FR[d.month - 1]} {d.year}"
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +197,7 @@ def save_pick(
     Appelé immédiatement après l'envoi Telegram.
     """
     if not game_date:
-        game_date = datetime.now().strftime("%Y-%m-%d")
+        game_date = _qc_now().strftime("%Y-%m-%d")
 
     history  = load_history()
     pick_id  = str(uuid.uuid4())[:8]
@@ -345,7 +365,9 @@ def _recalculate_stats(history: dict):
     pending    = sum(1 for p in picks if p["result"] is None)
     total_grad = wins + losses
 
+    _last_recap = history.get("stats", {}).get("last_recap_date", "")
     history["stats"] = {
+        "last_recap_date": _last_recap,
         "total_sent":   len(picks),
         "wins":         wins,
         "losses":       losses,
@@ -378,6 +400,23 @@ def _current_streak(picks: list) -> str:
 # FORMATAGE DES RAPPORTS TELEGRAM
 # ─────────────────────────────────────────────────────────────────────────────
 
+def get_last_recap_date() -> str:
+    """Date (Québec) du dernier récap envoyé — persistée en base."""
+    try:
+        return load_history().get("stats", {}).get("last_recap_date", "") or ""
+    except Exception:
+        return ""
+
+
+def set_last_recap_date(date_str: str):
+    try:
+        h = load_history()
+        h.setdefault("stats", {})["last_recap_date"] = date_str
+        _save_history(h)
+    except Exception as e:
+        logger.error(f"❌ set_last_recap_date: {e}")
+
+
 def format_today_recap() -> str:
     """
     Résumé de fin de journée : tous les picks envoyés aujourd'hui
@@ -387,7 +426,7 @@ def format_today_recap() -> str:
     """
     history  = load_history()
     picks    = history["picks"]
-    today    = datetime.now().strftime("%Y-%m-%d")
+    today    = _qc_now().strftime("%Y-%m-%d")
     today_ps = [p for p in picks if p.get("date") == today]
     stats    = history["stats"]
     s_wins   = stats.get("wins", 0)
@@ -396,7 +435,7 @@ def format_today_recap() -> str:
     s_wr     = s_wins / s_tot if s_tot > 0 else 0.0
     streak   = _current_streak(picks)
 
-    date_fr  = datetime.now().strftime("%A %d %B %Y").upper()
+    date_fr  = _date_fr(_qc_now())
 
     if not today_ps:
         msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -428,7 +467,7 @@ def format_today_recap() -> str:
 
     msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
     msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
-    msg += f"     {datetime.now().strftime('%A %d %B %Y').upper()}\n"
+    msg += f"     {_date_fr(_qc_now())}\n"
     msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
     for p in today_ps:
@@ -479,7 +518,7 @@ def format_daily_report(days: int = 7) -> str:
     picks   = history["picks"]
     stats   = history["stats"]
 
-    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    cutoff = (_qc_now() - timedelta(days=days)).strftime("%Y-%m-%d")
     recent = [p for p in picks if p.get("date", "") >= cutoff]
 
     r_wins    = sum(1 for p in recent if p["result"] == "WIN")
@@ -552,7 +591,7 @@ async def backup_to_telegram(bot, chat_id: str) -> bool:
 
     caption = (
         f"🔒 ULTRON — Backup mémoire\n"
-        f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+        f"📅 {_qc_now().strftime('%Y-%m-%d %H:%M')}\n"
         f"📊 {picks_count} picks  •  {wins}W–{losses}L  •  {wr:.1%} WR"
     )
 
