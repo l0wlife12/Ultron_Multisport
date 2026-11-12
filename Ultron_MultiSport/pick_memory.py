@@ -419,9 +419,9 @@ def set_last_recap_date(date_str: str):
 
 def format_today_recap() -> str:
     """
-    Résumé de fin de journée : tous les picks envoyés aujourd'hui
-    avec leur résultat (WIN / LOSS / en attente).
-    Envoyé automatiquement à 23h00 heure Québec.
+    Bilan de fin de journée (23h00 heure Québec) :
+    liste des paris GAGNÉS, PERDUS et EN ATTENTE du jour,
+    avec la précision d'Ultron pour la journée.
     Retourne toujours un message — même s'il n'y a pas eu de picks.
     """
     history  = load_history()
@@ -434,79 +434,72 @@ def format_today_recap() -> str:
     s_tot    = s_wins + s_loss
     s_wr     = s_wins / s_tot if s_tot > 0 else 0.0
     streak   = _current_streak(picks)
-
     date_fr  = _date_fr(_qc_now())
+    LINE     = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    SPORT_E  = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}
+
+    header  = f"{LINE}\n📋  U L T R O N  —  B I L A N  D U  J O U R\n     {date_fr}\n{LINE}\n"
+    season  = f"📈  Saison :  {s_wins}W–{s_loss}L"
+    if s_tot > 0:
+        season += f"  ({s_wr:.1%})"
+    season += f"  •  Série {streak}\n"
 
     if not today_ps:
-        msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
-        msg += f"     {date_fr}\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        msg += "📭  Aucun pick envoyé aujourd'hui.\n"
-        msg += "     (Aucun match dans la fenêtre 1h avant début)\n\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        msg += f"📈  Saison   :  {s_wins}W–{s_loss}L"
-        if s_tot > 0:
-            msg += f"  ({s_wr:.1%} WR)"
-        msg += f"  •  Série {streak}\n"
-        msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        return msg
+        return (header + "\n📭  Aucun pick envoyé aujourd'hui.\n\n"
+                + LINE + "\n" + season + LINE)
 
-    wins    = sum(1 for p in today_ps if p["result"] == "WIN")
-    losses  = sum(1 for p in today_ps if p["result"] == "LOSS")
-    pending = sum(1 for p in today_ps if p["result"] is None)
-    total_g = wins + losses
-    wr      = wins / total_g if total_g > 0 else 0.0
+    won     = [p for p in today_ps if p["result"] == "WIN"]
+    lost    = [p for p in today_ps if p["result"] == "LOSS"]
+    pushed  = [p for p in today_ps if p["result"] == "PUSH"]
+    pending = [p for p in today_ps if p["result"] is None]
+    graded  = len(won) + len(lost)
+    acc     = len(won) / graded if graded else 0.0
 
-    if wins > losses:
-        bilan_icon = "🟢"
-    elif wins == losses:
-        bilan_icon = "🟡"
+    def _block(title, items, with_score=True):
+        if not items:
+            return ""
+        out = f"\n{title} ({len(items)})\n"
+        for p in items:
+            e = SPORT_E.get(p["sport"], "🎯")
+            label = p["pick_team"]
+            if p.get("pick_type") and p["pick_type"] != "ML":
+                label += f" ({p['pick_type']})"
+            out += f"  {e} {label} @ {p['odds']} — conf. {p['confidence']}%\n"
+            if with_score and p.get("score"):
+                out += f"      📍 {p['score']}\n"
+        return out
+
+    def _build(with_score):
+        body  = _block("✅  GAGNÉS", won, with_score)
+        body += _block("❌  PERDUS", lost, with_score)
+        body += _block("➖  REMBOURSÉS", pushed, with_score)
+        body += _block("⏳  EN ATTENTE", pending, False)
+        return body
+
+    body = _build(True)
+    if len(body) > 3200:          # limite Telegram 4096 caractères
+        body = _build(False)
+
+    if graded:
+        icon = "🟢" if acc >= 0.5 else "🔴"
+        verdict = f"{icon}  Précision du jour :  {acc:.1%}  ({len(won)}W – {len(lost)}L)\n"
     else:
-        bilan_icon = "🔴"
-
-    msg  = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"📋  U L T R O N  —  R É C A P  D U  J O U R\n"
-    msg += f"     {_date_fr(_qc_now())}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-
-    for p in today_ps:
-        sport_e = {"NBA": "🏀", "NHL": "🏒", "MLB": "⚾", "NFL": "🏈"}.get(p["sport"], "🎯")
-        if p["result"] == "WIN":
-            res_icon = "✅"
-        elif p["result"] == "LOSS":
-            res_icon = "❌"
-        else:
-            res_icon = "⏳"
-
-        msg += f"\n{res_icon}  {sport_e}  {p['pick_team']}"
-        if p.get("pick_type") and p["pick_type"] != "ML":
-            msg += f"  ({p['pick_type']})"
-        msg += f"\n      Cote {p['odds']}  •  conf. {p['confidence']}%\n"
-        if p.get("score"):
-            msg += f"      📍 {p['score']}\n"
-
-    msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    msg += f"{bilan_icon}  Aujourd'hui :  {wins}W  –  {losses}L"
-    if total_g > 0:
-        msg += f"  ({wr:.1%} WR)"
+        verdict = "🎯  Précision du jour :  — (aucun résultat final pour l'instant)\n"
     if pending:
-        msg += f"  •  {pending} en attente"
-    msg += "\n"
+        verdict += f"⏳  {len(pending)} pick(s) en attente — résultat envoyé dès que le match est terminé\n"
 
-    # Bilan global saison
-    stats  = history["stats"]
-    s_wins = stats.get("wins", 0)
-    s_loss = stats.get("losses", 0)
-    s_tot  = s_wins + s_loss
-    s_wr   = s_wins / s_tot if s_tot > 0 else 0.0
-    streak = _current_streak(picks)
-    msg   += f"📈  Saison   :  {s_wins}W–{s_loss}L"
-    if s_tot > 0:
-        msg += f"  ({s_wr:.1%})"
-    msg += f"  •  Série {streak}\n"
-    msg += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    return msg
+    # Détail par sport
+    per_sport = ""
+    for sp in ("NBA", "NHL", "MLB", "NFL"):
+        w = sum(1 for p in won if p["sport"] == sp)
+        l = sum(1 for p in lost if p["sport"] == sp)
+        if w + l:
+            per_sport += f"{SPORT_E[sp]} {sp} {w}/{w + l}   "
+    if per_sport:
+        per_sport = per_sport.rstrip() + "\n"
+
+    return (header + body + "\n" + LINE + "\n" + verdict + per_sport
+            + season + LINE)
 
 
 def format_daily_report(days: int = 7) -> str:
