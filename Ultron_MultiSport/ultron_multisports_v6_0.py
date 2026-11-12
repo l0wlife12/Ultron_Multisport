@@ -1548,6 +1548,74 @@ def _odds_cache_db_save(sport_key: str, data: list, fetched_at: datetime.datetim
 _odds_cache_db_init()
 
 
+# ── Vue marché (consensus sans marge + cotes de référence) ─────────────────
+try:
+    from odds_market import (
+        market_view as _market_view,
+        spread_price_for as _spread_price_for,
+        BOOKMAKERS_PARAM as _ODDS_BOOKMAKERS,
+    )
+    ODDS_MARKET_AVAILABLE = True
+except ImportError:
+    ODDS_MARKET_AVAILABLE = False
+    _ODDS_BOOKMAKERS = ""
+_ODDS_REGION_QS = f"bookmakers={_ODDS_BOOKMAKERS}" if _ODDS_BOOKMAKERS else "regions=us"
+
+
+def _fmt_line(x: float) -> str:
+    """Format d'un handicap: +6.5 / -3 / PK"""
+    return "PK" if abs(x) < 1e-9 else f"{x:+g}"
+
+
+def apply_real_market(odds_data: dict, sport_key: str, away_team: str, home_team: str) -> dict:
+    """
+    Remplace les cotes synthétiques ("DEFAULT") par le vrai marché quand
+    The Odds API a le match en cache :
+      - away_ml / home_ml  = cote de référence jouable (médiane des books récréatifs)
+      - market_prob_home   = probabilité de consensus SANS MARGE (Pinnacle x3 + autres)
+      - market             = vue complète (spread / total de consensus)
+    N'ajoute AUCUNE requête : lit le cache 4h de fetch_odds_api().
+    """
+    if not ODDS_MARKET_AVAILABLE or not ODDS_API_KEY:
+        return odds_data
+    try:
+        events = fetch_odds_api(sport_key)
+        if not events:
+            return odds_data
+        mv = _market_view(events, away_team, home_team)
+        if not mv or not mv.get("ml"):
+            logger.debug(f"ℹ️ Marché réel introuvable: {away_team} @ {home_team} ({sport_key})")
+            return odds_data
+        ml = mv["ml"]
+        out = dict(odds_data)
+        out.update({
+            "away_ml": ml["price_away"],
+            "home_ml": ml["price_home"],
+            "away_book": "Médiane marché",
+            "home_book": "Médiane marché",
+            "market_prob_home": ml["p_home"],
+            "market_real": True,
+            "market": mv,
+        })
+        return out
+    except Exception as e:
+        logger.warning(f"⚠️ apply_real_market [{sport_key}] {away_team}@{home_team}: {e}")
+        return odds_data
+
+
+def apply_real_spread_price(odds_data: dict, spread_pick: str, spread_odds: float, home_team: str) -> float:
+    """Puck line / run line ±1.5 : remplace la cote fixe par la cote réelle du marché
+    si la ligne choisie est la ligne de consensus. Sinon garde la cote d'origine."""
+    try:
+        if not odds_data.get("market_real"):
+            return spread_odds
+        name, pt = spread_pick.rsplit(" ", 1)
+        px = _spread_price_for(odds_data.get("market"), name == home_team.upper(), float(pt))
+        return px if px else spread_odds
+    except Exception:
+        return spread_odds
+
+
 def fetch_odds_api(sport_key: str) -> list:
     """
     Appelle The Odds API une seule fois par tranche de 4h par sport.
@@ -1582,7 +1650,7 @@ def fetch_odds_api(sport_key: str) -> list:
         url = (
             f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/"
             f"?apiKey={ODDS_API_KEY}"
-            f"&regions=us"
+            f"&{_ODDS_REGION_QS}"
             f"&markets=h2h,spreads,totals"
             f"&oddsFormat=decimal"
             f"&dateFormat=iso"
@@ -1833,6 +1901,7 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     home_stats = _nhl_ts.get(home_clean, {"strength": 75, "gf": 3.0, "ga": 3.0, "wins": 30, "losses": 30})
     
     odds_data = get_best_odds_nhl(away_clean, home_clean)
+    odds_data = apply_real_market(odds_data, "nhl", away_team, home_team)
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
     
@@ -1861,6 +1930,8 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     # Consensus du marché
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    if odds_data.get("market_real"):   # vrai consensus sans marge (Pinnacle + books)
+        market_consensus_away = 1.0 - odds_data["market_prob_home"]
     
     blended_prob = (_model_w_nhl * win_prob_away) + ((1.0 - _model_w_nhl) * market_consensus_away)
     blended_prob = max(0.05, min(0.95, blended_prob))
@@ -1895,6 +1966,13 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         ml_status = "👀 MONITORING"
     else:
         ml_status = "⏸ PASS"
+
+    # ── Garde-fou: EV négatif vs le VRAI marché => pas de pick ML ─────────
+    ml_no_value = False
+    if odds_data.get("market_real") and ml_ev < 0:
+        ml_no_value = True
+        ml_status = "⏸ PASS"
+        ml_confidence = min(ml_confidence, 49)
     
     # ═══════════════════════════════════════════════════════════════════════
     # 2️⃣ PUCK LINE SCORING (±1.5 - ATS L10 ≥ 6/10)
@@ -1921,6 +1999,7 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
             spread_pick = f"{home_team.upper()} +1.5"
         spread_odds = 1.65
     
+    spread_odds = apply_real_spread_price(odds_data, spread_pick, spread_odds, home_team)
     spread_score = score_spread_enhanced(pline_spread, blended_prob, 1.0 - blended_prob, away_team, home_team, "NHL")
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
@@ -1937,6 +2016,9 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     # ═══════════════════════════════════════════════════════════════════════
     projected_total = away_stats["gf"] + home_stats["gf"]
     ou_line = estimate_market_line("NHL", projected_total)
+    _mk_tt = (odds_data.get("market") or {}).get("total")
+    if odds_data.get("market_real") and _mk_tt:
+        ou_line = _mk_tt["line"]   # ligne de consensus réelle
     
     away_l10_ppg = away_stats.get("gf", 3.0)
     home_l10_ppg = home_stats.get("gf", 3.0)
@@ -1950,6 +2032,8 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
     else:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
+    if odds_data.get("market_real") and _mk_tt:
+        ou_odds = _mk_tt["price_over"] if ou_pick.startswith("OVER") else _mk_tt["price_under"]
     
     if ou_confidence >= 58:
         ou_status = "✅ BUY"
@@ -1972,6 +2056,8 @@ def generate_prediction_nhl(away_team: str, home_team: str) -> dict:
         "ml_confidence": ml_confidence,
         "ml_ev_pct": f"{ml_ev*100:.2f}%",
         "ml_status": ml_status,
+        "ml_no_value": ml_no_value,
+        "market_real": bool(odds_data.get("market_real")),
         # Puck Line
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
@@ -2105,6 +2191,7 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     home_stats = _mlb_ts.get(home_clean, {"strength": 80, "r": 4.2, "ra": 4.2, "wins": 81, "losses": 81})
     
     odds_data = get_best_odds_mlb(away_clean, home_clean)
+    odds_data = apply_real_market(odds_data, "mlb", away_team, home_team)
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
     
@@ -2132,6 +2219,8 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     # Consensus du marché
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
+    if odds_data.get("market_real"):   # vrai consensus sans marge (Pinnacle + books)
+        market_consensus_away = 1.0 - odds_data["market_prob_home"]
     
     blended_prob = (_model_w_mlb * win_prob_away) + ((1.0 - _model_w_mlb) * market_consensus_away)
     blended_prob = max(0.05, min(0.95, blended_prob))
@@ -2165,6 +2254,13 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         ml_status = "👀 MONITORING"
     else:
         ml_status = "⏸ PASS"
+
+    # ── Garde-fou: EV négatif vs le VRAI marché => pas de pick ML ─────────
+    ml_no_value = False
+    if odds_data.get("market_real") and ml_ev < 0:
+        ml_no_value = True
+        ml_status = "⏸ PASS"
+        ml_confidence = min(ml_confidence, 49)
     
     # ═══════════════════════════════════════════════════════════════════════
     # 2️⃣ RUNLINE SCORING (±1.5 - ATS L10 ≥ 6/10)
@@ -2182,6 +2278,7 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         spread_pick = f"{home_team.upper()} PK"
         spread_odds = 1.909
     
+    spread_odds = apply_real_spread_price(odds_data, spread_pick, spread_odds, home_team)
     spread_score = score_spread_enhanced(runline_spread, blended_prob, 1.0 - blended_prob, away_team, home_team, "MLB")
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
@@ -2198,6 +2295,9 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     # ═══════════════════════════════════════════════════════════════════════
     projected_total = away_stats["r"] + home_stats["r"]
     ou_line = estimate_market_line("MLB", projected_total)
+    _mk_tt = (odds_data.get("market") or {}).get("total")
+    if odds_data.get("market_real") and _mk_tt:
+        ou_line = _mk_tt["line"]   # ligne de consensus réelle
     
     away_l10_ppg = away_stats.get("r", 4.2)
     home_l10_ppg = home_stats.get("r", 4.2)
@@ -2211,6 +2311,8 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
     else:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
+    if odds_data.get("market_real") and _mk_tt:
+        ou_odds = _mk_tt["price_over"] if ou_pick.startswith("OVER") else _mk_tt["price_under"]
     
     if ou_confidence >= 58:
         ou_status = "✅ BUY"
@@ -2233,6 +2335,8 @@ def generate_prediction_mlb(away_team: str, home_team: str) -> dict:
         "ml_confidence": ml_confidence,
         "ml_ev_pct": f"{ml_ev*100:.2f}%",
         "ml_status": ml_status,
+        "ml_no_value": ml_no_value,
+        "market_real": bool(odds_data.get("market_real")),
         # Runline
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
@@ -3853,6 +3957,7 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     home_clean = find_team_nba(home_team) or home_team.lower()
     
     odds_data = get_best_odds_nba(away_clean, home_clean)
+    odds_data = apply_real_market(odds_data, "nba", away_team, home_team)
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
     
@@ -3889,6 +3994,8 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     prob_home_market = 1.0 - market_consensus_away
+    if odds_data.get("market_real"):   # vrai consensus sans marge (Pinnacle + books)
+        prob_home_market = odds_data["market_prob_home"]
     
     # ── Paramètres appris par Ultron Brain (calibration auto) ────────────
     _adj_nba      = get_model_adjustments("NBA")
@@ -3933,6 +4040,13 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         ml_status = "👀 MONITORING"
     else:
         ml_status = "⏸ PASS"
+
+    # ── Garde-fou: EV négatif vs le VRAI marché => pas de pick ML ─────────
+    ml_no_value = False
+    if odds_data.get("market_real") and ml_ev < 0:
+        ml_no_value = True
+        ml_status = "⏸ PASS"
+        ml_confidence = min(ml_confidence, 49)
     
     # ═══════════════════════════════════════════════════════════════════════
     # 2️⃣ SPREAD SCORING (ATS L10 ≥ 6/10 required)
@@ -3948,7 +4062,19 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         spread_pick = f"{home_team.upper()} PK"
     
     spread_odds = 1.909
-    spread_score = score_spread_enhanced(raw_spread, prob_away, blended_prob, away_team, home_team, "NBA")
+    _spread_arg = raw_spread
+    _mk_sp = (odds_data.get("market") or {}).get("spread")
+    if odds_data.get("market_real") and _mk_sp:
+        # Ligne et cotes RÉELLES ; côté choisi = celui que le modèle favorise
+        _Lh = _mk_sp["home_line"]
+        if (-estimated_spread + _Lh) > 0:
+            spread_pick = f"{home_team.upper()} {_fmt_line(_Lh)}"
+            spread_odds = _mk_sp["price_home"]
+        else:
+            spread_pick = f"{away_team.upper()} {_fmt_line(-_Lh)}"
+            spread_odds = _mk_sp["price_away"]
+        _spread_arg = _Lh
+    spread_score = score_spread_enhanced(_spread_arg, prob_away, blended_prob, away_team, home_team, "NBA")
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
     
@@ -3966,6 +4092,9 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     nba_home = NBA_TEAM_STATS.get(home_clean, {"ppg": 115.0, "pa": 112.0})
     projected_total = nba_away["ppg"] + nba_home["ppg"]
     ou_line = estimate_market_line("NBA", projected_total)
+    _mk_tt = (odds_data.get("market") or {}).get("total")
+    if odds_data.get("market_real") and _mk_tt:
+        ou_line = _mk_tt["line"]   # ligne de consensus réelle
     
     away_l10_ppg = nba_away.get("ppg", 115.0)
     home_l10_ppg = nba_home.get("ppg", 115.0)
@@ -3979,6 +4108,8 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
     else:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
+    if odds_data.get("market_real") and _mk_tt:
+        ou_odds = _mk_tt["price_over"] if ou_pick.startswith("OVER") else _mk_tt["price_under"]
     
     if ou_confidence >= 58:
         ou_status = "✅ BUY"
@@ -4002,6 +4133,8 @@ def generate_prediction_nba(away_team: str, home_team: str) -> dict:
         "ml_confidence": ml_confidence,
         "ml_ev_pct": f"{ml_ev*100:.2f}%",
         "ml_status": ml_status,
+        "ml_no_value": ml_no_value,
+        "market_real": bool(odds_data.get("market_real")),
         # Spread
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
@@ -4021,6 +4154,7 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     home_clean = find_team_nfl(home_team) or home_team.lower()
 
     odds_data = get_best_odds_nfl(away_clean, home_clean)
+    odds_data = apply_real_market(odds_data, "nfl", away_team, home_team)
     best_away_ml = odds_data["away_ml"]
     best_home_ml = odds_data["home_ml"]
 
@@ -4045,6 +4179,8 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     market_away_avg = (1.0 / best_away_ml + 1.0 / best_home_ml)
     market_consensus_away = (1.0 / best_away_ml) / market_away_avg
     prob_home_market = 1.0 - market_consensus_away
+    if odds_data.get("market_real"):   # vrai consensus sans marge (Pinnacle + books)
+        prob_home_market = odds_data["market_prob_home"]
 
     _adj_nfl      = get_model_adjustments("NFL")
     _model_w_nfl  = _adj_nfl.get("model_weight", 0.55)
@@ -4083,6 +4219,13 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     else:
         ml_status = "⏸ PASS"
 
+    # ── Garde-fou: EV négatif vs le VRAI marché => pas de pick ML ─────────
+    ml_no_value = False
+    if odds_data.get("market_real") and ml_ev < 0:
+        ml_no_value = True
+        ml_status = "⏸ PASS"
+        ml_confidence = min(ml_confidence, 49)
+
     estimated_spread = (prob_away - 0.5) * 16.0
     raw_spread = round(estimated_spread * 2) / 2
 
@@ -4094,7 +4237,19 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
         spread_pick = f"{home_team.upper()} PK"
 
     spread_odds = 1.909
-    spread_score = score_spread_enhanced(raw_spread, prob_away, blended_prob, away_team, home_team, "NFL")
+    _spread_arg = raw_spread
+    _mk_sp = (odds_data.get("market") or {}).get("spread")
+    if odds_data.get("market_real") and _mk_sp:
+        # Ligne et cotes RÉELLES ; côté choisi = celui que le modèle favorise
+        _Lh = _mk_sp["home_line"]
+        if (-estimated_spread + _Lh) > 0:
+            spread_pick = f"{home_team.upper()} {_fmt_line(_Lh)}"
+            spread_odds = _mk_sp["price_home"]
+        else:
+            spread_pick = f"{away_team.upper()} {_fmt_line(-_Lh)}"
+            spread_odds = _mk_sp["price_away"]
+        _spread_arg = _Lh
+    spread_score = score_spread_enhanced(_spread_arg, prob_away, blended_prob, away_team, home_team, "NFL")
     spread_confidence = spread_score["confidence"]
     spread_send = spread_score["send"]
 
@@ -4109,6 +4264,9 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     nfl_home = NFL_TEAM_STATS.get(home_clean, {"ppg": 22.0, "pa": 22.0})
     projected_total = nfl_away["ppg"] + nfl_home["ppg"]
     ou_line = estimate_market_line("NFL", projected_total)
+    _mk_tt = (odds_data.get("market") or {}).get("total")
+    if odds_data.get("market_real") and _mk_tt:
+        ou_line = _mk_tt["line"]   # ligne de consensus réelle
 
     away_l10_ppg = nfl_away.get("ppg", 22.0)
     home_l10_ppg = nfl_home.get("ppg", 22.0)
@@ -4122,6 +4280,8 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
     else:
         ou_pick = f"UNDER {ou_line}"
     ou_odds = 1.909
+    if odds_data.get("market_real") and _mk_tt:
+        ou_odds = _mk_tt["price_over"] if ou_pick.startswith("OVER") else _mk_tt["price_under"]
 
     if ou_confidence >= 58:
         ou_status = "✅ BUY"
@@ -4144,6 +4304,8 @@ def generate_prediction_nfl(away_team: str, home_team: str) -> dict:
         "ml_confidence": ml_confidence,
         "ml_ev_pct": f"{ml_ev*100:.2f}%",
         "ml_status": ml_status,
+        "ml_no_value": ml_no_value,
+        "market_real": bool(odds_data.get("market_real")),
         "spread_pick": spread_pick,
         "spread_odds": f"{spread_odds:.2f}",
         "spread_confidence": spread_confidence,
@@ -5659,30 +5821,17 @@ async def auto_send_pronostics(context):
             if pred:
                 qc_time = match_time.astimezone(QUEBEC_TZ)
 
-                # Remplacer ML + Spread + O/U par les cotes réelles si disponibles
-                live = get_live_odds_for_match(away, home, live_odds_by_sport.get(sport_key, []))
-                if live:
-                    ml_pick_away = f"{away.upper()} ML"
-                    ml_pick_home = f"{home.upper()} ML"
-                    if live["ml_away"] > live["ml_home"]:
-                        real_ml_pick = ml_pick_away
-                        real_ml_odds = f"{live['ml_away']:.2f}"
-                    else:
-                        real_ml_pick = ml_pick_home
-                        real_ml_odds = f"{live['ml_home']:.2f}"
-                    real_spread_pick = live["spread_pick"]
-                    real_spread_odds = live["spread_odds"]
-                    real_ou_pick = live["ou_pick"]
-                    real_ou_odds = live["ou_odds"]
-                    source_tag = "🟢"  # cotes réelles
-                else:
-                    real_ml_pick = pred.get('ml_pick', pred.get('pick', ''))
-                    real_ml_odds = pred.get('ml_odds', pred.get('odds', ''))
-                    real_spread_pick = pred.get('spread_pick', '')
-                    real_spread_odds = pred.get('spread_odds', '')
-                    real_ou_pick = pred.get('ou_pick', '')
-                    real_ou_odds = pred.get('ou_odds', '')
-                    source_tag = "📊"  # cotes calculées
+                # Les moteurs utilisent déjà le VRAI marché (voir apply_real_market) :
+                # on garde le côté choisi par le modèle, avec ligne et cotes réelles.
+                # (Ancienne logique supprimée: elle prenait toujours l'outsider en ML,
+                #  l'équipe visiteuse en spread et toujours OVER en total.)
+                real_ml_pick = pred.get('ml_pick', pred.get('pick', ''))
+                real_ml_odds = pred.get('ml_odds', pred.get('odds', ''))
+                real_spread_pick = pred.get('spread_pick', '')
+                real_spread_odds = pred.get('spread_odds', '')
+                real_ou_pick = pred.get('ou_pick', '')
+                real_ou_odds = pred.get('ou_odds', '')
+                source_tag = "🟢" if pred.get('market_real') else "📊"  # 🟢 = cotes réelles du marché
 
                 # ── Ajustement ESPN (blessures + stats) ──────────────────
                 base_ml_conf = pred.get('ml_confidence', pred.get('confidence', 50))
@@ -5719,6 +5868,7 @@ async def auto_send_pronostics(context):
                     "ml_confidence": base_ml_conf,
                     "ml_ev_pct": pred.get('ml_ev_pct', pred.get('ev_pct', '')),
                     "ml_status": pred.get('status', '') + espn_tag,
+                    "ml_no_value": bool(pred.get('ml_no_value', False)),
                     # Spread
                     "spread_pick": real_spread_pick,
                     "spread_odds": real_spread_odds,
@@ -5754,7 +5904,9 @@ async def auto_send_pronostics(context):
                          "NHL" if "🏒" in p["label"] else
                          "MLB" if "⚾" in p["label"] else
                          "NFL")
-            if should_send_pick(sport_key, p["confidence"], p.get("pick_type", "ML")):
+            _conf_f = (max(p.get("spread_confidence", 0), p.get("ou_confidence", 0))
+                       if p.get("ml_no_value") else p["confidence"])
+            if should_send_pick(sport_key, _conf_f, p.get("pick_type", "ML")):
                 filtered.append(p)
             else:
                 logger.info(f"🧠 Brain filter: BLOQUÉ {p['label']} conf={p['confidence']}% (sous seuil {sport_key})")
@@ -5801,7 +5953,8 @@ async def auto_send_pronostics(context):
             
             msg_vip += f"\n{emoji_rank}  {p['label']}  {src}\n"
             msg_vip += f"🕐  {p['heure']}  |  💼 {book}\n"
-            msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']} — Confiance: {p.get('ml_confidence', 0)}/100\n"
+            if not p.get('ml_no_value'):   # ML affiché seulement s'il y a une vraie value vs le marché
+                msg_vip += f"{status_emoji_ml} ML: {p['ml_pick']} @ {p['ml_odds']} — Confiance: {p.get('ml_confidence', 0)}/100\n"
             if p.get('spread_pick'):
                 # Afficher enriched runline pour MLB si disponible
                 if p.get('sport') == 'mlb' and p.get('confidence_enriched'):
@@ -5859,6 +6012,8 @@ async def auto_send_pronostics(context):
             parts = label_clean.split(" @ ")
             away_t = parts[0].strip() if len(parts) == 2 else p["label"]
             home_t = parts[1].strip() if len(parts) == 2 else ""
+            if p.get("ml_no_value"):
+                continue   # ML non envoyé (pas de value réelle) → pas suivi
             save_pick(
                 sport=sport_label,
                 away_team=away_t,
