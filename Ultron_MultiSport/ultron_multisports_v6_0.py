@@ -4746,11 +4746,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg += "PARLAYS (Combinaisons multiiples):\n"
     msg += "/parlays - Auto-suggestions de parlays 🎯\n"
     msg += "   Ultron combine les BUY picks pour maximiser les cotes!\n\n"
-    msg += "COMMANDES PLAYER PROPS:\n"
-    msg += "/daily_props - Props de TOUS les matchs du jour 🔥\n"
-    msg += "/props_match [équipe1] vs [équipe2] - Props du match\n"
-    msg += "/player [nom] - Props d'un joueur star 🌟\n"
-    msg += "/all_props - Tous les joueurs stars disponibles\n\n"
     msg += "COMMANDES ESPN EN DIRECT:\n"
     msg += "/boxscore nba — Box scores en direct 📊\n"
     msg += "/boxscore nhl — Box scores NHL 🏒\n"
@@ -5877,29 +5872,7 @@ async def auto_send_pronostics(context):
             )
         logger.info(f"💾 {len(all_picks)} picks mémorisés pour auto-notation")
 
-    # ── Player Props NBA : joueurs des équipes concernées ────────────────
-    import asyncio as _asyncio
-    for p in all_picks:
-        if "🏀" not in p["label"]:
-            continue  # NBA uniquement
-        label_clean = p["label"].split(" ", 1)[-1]  # retire l'emoji
-        parts = label_clean.split(" @ ")
-        if len(parts) != 2:
-            continue
-        away_t, home_t = parts[0].strip(), parts[1].strip()
-        # VIP reçoit tous les picks, FREE seulement les 2 meilleurs
-        props_msg_vip  = _player_props_msg_for_match(away_t, home_t, max_picks=None)
-        props_msg_free = _player_props_msg_for_match(away_t, home_t, max_picks=2)
-        header = f"🏀 {away_t} @ {home_t}\n"
-        try:
-            if props_msg_free:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=header + props_msg_free)
-            if TELEGRAM_CHAT_ID_VIP and props_msg_vip:
-                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID_VIP, text=header + props_msg_vip)
-            logger.info(f"🌟 Props joueurs envoyés: {away_t} @ {home_t}")
-        except Exception as _pe:
-            logger.error(f"❌ Props joueurs envoi: {_pe}")
-        await _asyncio.sleep(0.5)
+    # (Props joueurs NBA retirés)
 
     # ── COUPE DU MONDE FIFA 2026 — envoi automatique ──────────────────────
     # Vérifie les matchs WC dans la fenêtre 120 min et envoie les picks EV+
@@ -6418,23 +6391,6 @@ async def cmd_picks(update, context):
             await asyncio.sleep(1)
         logger.info(f"✅ /picks envoyé: {len(result.get('picks', []))} picks")
 
-        # ── Props joueurs NBA pour chaque match retenu ────────────────
-        nba_matches_seen: set = set()
-        for pick in result.get('picks', []):
-            if pick.get('sport', '').upper() != 'NBA':
-                continue
-            away_t = pick.get('away_team', '')
-            home_t = pick.get('home_team', '')
-            key = f"{away_t}@{home_t}"
-            if key in nba_matches_seen or not away_t or not home_t:
-                continue
-            nba_matches_seen.add(key)
-            props_msg = _player_props_msg_for_match(away_t, home_t)
-            if props_msg:
-                await update.message.reply_text(
-                    f"🏀 {away_t} @ {home_t}\n" + props_msg
-                )
-                await asyncio.sleep(0.5)
     except Exception as e:
         logger.error(f"❌ cmd_picks: {e}")
         await update.message.reply_text(f"❌ Erreur picks v2: {e}")
@@ -6677,10 +6633,6 @@ def main():
     # Coupe du Monde retirée — commande /mondial désactivée
     app.add_handler(CommandHandler("pronostics", pronostics))
     app.add_handler(CommandHandler("parlays", auto_parlays_cmd))
-    app.add_handler(CommandHandler("player", player_props))
-    app.add_handler(CommandHandler("props_match", match_props))
-    app.add_handler(CommandHandler("all_props", all_props))
-    app.add_handler(CommandHandler("daily_props", daily_props))
     app.add_handler(CommandHandler("totals", cmd_totals))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("stats", cmd_stats))
@@ -6761,12 +6713,6 @@ def main():
         train_nba_model()
     else:
         logger.warning("⚠️ scikit-learn non disponible - Utilisant modèle statistique")
-
-    if XGBOOST_AVAILABLE:
-        logger.info("🤖 Initialisation du modèle Player Props XGBoost...")
-        train_player_props_model()
-    else:
-        logger.warning("⚠️ XGBoost non disponible - Prédictions player props désactivées")
 
     app.run_polling(drop_pending_updates=True)
 
